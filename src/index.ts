@@ -45,7 +45,13 @@ export default {
 async function handleUpmindWebhook(request: Request, env: Env): Promise<Response> {
   await ensureSchema(env);
   const payload = await readPayload(request);
-  const eventName = readString(payload.event) ?? readString(payload.name) ?? 'upmind.unknown';
+  const eventName = normalizeEventName(firstNonEmpty([
+    readString(payload.event),
+    readString(payload.name),
+    readString(payload.type),
+    readString(payload.action),
+    recursiveFindString(payload, ['event', 'eventName', 'eventType', 'name', 'type', 'action'])
+  ])) ?? 'upmind.unknown';
   const eventKey = await computeEventKey('upmind', request, payload);
 
   if (await isDuplicate(env, eventKey)) {
@@ -55,11 +61,20 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
   await markProcessed(env, eventKey, 'upmind');
   await storeRawEvent(env, 'upmind', eventName, eventKey, payload);
 
-  const ticketId = deepReadString(payload, ['data', 'ticket', 'id']) ?? deepReadString(payload, ['ticket', 'id']);
-  const messageId = deepReadString(payload, ['data', 'message', 'id']) ?? deepReadString(payload, ['message', 'id']);
-  const clientId = deepReadString(payload, ['data', 'client', 'id']) ?? deepReadString(payload, ['client', 'id']);
+  const ticketId = extractUpmindTicketId(payload);
+  const messageId = extractUpmindMessageId(payload);
+  const clientId = extractUpmindClientId(payload);
 
-  console.log(JSON.stringify({ source: 'upmind', eventName, eventKey, ticketId, messageId, clientId }));
+  console.log(JSON.stringify({
+    source: 'upmind',
+    eventName,
+    eventKey,
+    ticketId,
+    messageId,
+    clientId,
+    keys: Object.keys(payload).slice(0, 20),
+    preview: previewPayload(payload)
+  }));
 
   switch (eventName) {
     case 'Client created':
@@ -85,19 +100,31 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
       await syncUpmindStatusToZoho(payload, env);
       break;
     default:
-      if (ticketId && !messageId) {
+      if (ticketId && messageId) {
+        await syncUpmindMessageToZoho(payload, env);
+      } else if (ticketId) {
         await syncUpmindTicketToZoho(payload, env);
+      } else if (clientId) {
+        await syncUpmindClientToZoho(payload, env);
       }
       break;
   }
 
-  return json({ ok: true, source: 'upmind', eventName, eventKey });
+  return json({ ok: true, source: 'upmind', eventName, eventKey, ticketId, messageId, clientId });
 }
 
 async function handleZohoWebhook(request: Request, env: Env): Promise<Response> {
   await ensureSchema(env);
   const payload = await readPayload(request);
-  const eventName = readString(payload.eventName) ?? readString(payload.eventType) ?? 'zoho.unknown';
+  const eventName = normalizeEventName(firstNonEmpty([
+    readString(payload.eventName),
+    readString(payload.eventType),
+    readString(payload.event),
+    readString(payload.name),
+    readString(payload.type),
+    readString(payload.action),
+    recursiveFindString(payload, ['eventName', 'eventType', 'event', 'name', 'type', 'action', 'module'])
+  ])) ?? 'zoho.unknown';
   const eventKey = await computeEventKey('zoho', request, payload);
 
   if (await isDuplicate(env, eventKey)) {
@@ -107,12 +134,21 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
   await markProcessed(env, eventKey, 'zoho');
   await storeRawEvent(env, 'zoho', eventName, eventKey, payload);
 
+  const ticketId = extractZohoTicketId(payload);
+  const contactId = extractZohoContactId(payload);
+  const messageId = extractZohoMessageId(payload);
+  const status = extractZohoStatus(payload);
+
   console.log(JSON.stringify({
     source: 'zoho',
     eventName,
     eventKey,
-    ticketId: deepReadString(payload, ['data', 'id']) ?? deepReadString(payload, ['id']),
-    contactId: deepReadString(payload, ['data', 'contactId']) ?? deepReadString(payload, ['contactId'])
+    ticketId,
+    contactId,
+    messageId,
+    status,
+    keys: Object.keys(payload).slice(0, 20),
+    preview: previewPayload(payload)
   }));
 
   switch (eventName) {
@@ -131,10 +167,19 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
       await syncZohoStatusToUpmind(payload, env);
       break;
     default:
+      if (ticketId && messageId) {
+        await syncZohoReplyToUpmind(payload, env);
+      } else if (ticketId && status) {
+        await syncZohoStatusToUpmind(payload, env);
+      } else if (ticketId) {
+        await syncZohoTicketToUpmind(payload, env);
+      } else if (contactId) {
+        await syncZohoContactToUpmind(payload, env);
+      }
       break;
   }
 
-  return json({ ok: true, source: 'zoho', eventName, eventKey });
+  return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status });
 }
 
 async function ensureSchema(env: Env): Promise<void> {
@@ -219,8 +264,8 @@ async function readPayload(request: Request): Promise<JsonRecord> {
 }
 
 async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<void> {
-  const clientId = deepReadString(payload, ['data', 'client', 'id']) ?? deepReadString(payload, ['client', 'id']);
-  const email = deepReadString(payload, ['data', 'client', 'email']) ?? deepReadString(payload, ['client', 'email']);
+  const clientId = extractUpmindClientId(payload);
+  const email = extractUpmindEmail(payload);
 
   if (!clientId || !email) return;
 
@@ -241,34 +286,12 @@ async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<vo
 }
 
 async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<void> {
-  const ticketId = deepReadString(payload, ['data', 'ticket', 'id']) ?? deepReadString(payload, ['ticket', 'id']);
-  const clientId = deepReadString(payload, ['data', 'client', 'id']) ?? deepReadString(payload, ['client', 'id']);
-  const email = deepReadString(payload, ['data', 'client', 'email']) ?? deepReadString(payload, ['client', 'email']);
-  const subject = firstString(payload, [
-    ['data', 'ticket', 'subject'],
-    ['ticket', 'subject'],
-    ['data', 'ticket', 'title'],
-    ['ticket', 'title'],
-    ['subject'],
-    ['title']
-  ]) ?? `Upmind ticket ${ticketId ?? 'unknown'}`;
-  const description = firstString(payload, [
-    ['data', 'ticket', 'description'],
-    ['ticket', 'description'],
-    ['data', 'ticket', 'message'],
-    ['ticket', 'message'],
-    ['data', 'message', 'content'],
-    ['message', 'content'],
-    ['description'],
-    ['content'],
-    ['body']
-  ]) ?? 'Imported from Upmind webhook';
-  const rawStatus = firstString(payload, [
-    ['data', 'ticket', 'status'],
-    ['ticket', 'status'],
-    ['status']
-  ]);
-  const status = mapUpmindStatusToZoho(rawStatus);
+  const ticketId = extractUpmindTicketId(payload);
+  const clientId = extractUpmindClientId(payload);
+  const email = extractUpmindEmail(payload);
+  const subject = extractUpmindSubject(payload) ?? `Upmind ticket ${ticketId ?? 'unknown'}`;
+  const description = extractUpmindDescription(payload) ?? 'Imported from Upmind webhook';
+  const status = mapUpmindStatusToZoho(extractUpmindStatus(payload));
 
   if (!ticketId) return;
 
@@ -308,16 +331,9 @@ async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<vo
 }
 
 async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<void> {
-  const ticketId = deepReadString(payload, ['data', 'ticket', 'id']) ?? deepReadString(payload, ['ticket', 'id']);
-  const messageId = deepReadString(payload, ['data', 'message', 'id']) ?? deepReadString(payload, ['message', 'id']);
-  const content = firstString(payload, [
-    ['data', 'message', 'content'],
-    ['message', 'content'],
-    ['data', 'message', 'body'],
-    ['message', 'body'],
-    ['content'],
-    ['body']
-  ]);
+  const ticketId = extractUpmindTicketId(payload);
+  const messageId = extractUpmindMessageId(payload);
+  const content = extractUpmindDescription(payload);
 
   if (!ticketId || !messageId) return;
 
@@ -346,12 +362,8 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
 }
 
 async function syncUpmindStatusToZoho(payload: JsonRecord, env: Env): Promise<void> {
-  const ticketId = deepReadString(payload, ['data', 'ticket', 'id']) ?? deepReadString(payload, ['ticket', 'id']);
-  const status = mapUpmindStatusToZoho(firstString(payload, [
-    ['data', 'ticket', 'status'],
-    ['ticket', 'status'],
-    ['status']
-  ]));
+  const ticketId = extractUpmindTicketId(payload);
+  const status = mapUpmindStatusToZoho(extractUpmindStatus(payload));
 
   if (!ticketId || !status) return;
 
@@ -369,8 +381,8 @@ async function syncUpmindStatusToZoho(payload: JsonRecord, env: Env): Promise<vo
 }
 
 async function syncZohoContactToUpmind(payload: JsonRecord, env: Env): Promise<void> {
-  const zohoContactId = deepReadString(payload, ['data', 'id']) ?? deepReadString(payload, ['id']);
-  const email = deepReadString(payload, ['data', 'email']) ?? deepReadString(payload, ['email']);
+  const zohoContactId = extractZohoContactId(payload);
+  const email = extractZohoEmail(payload);
 
   if (!zohoContactId || !email) return;
 
@@ -391,8 +403,8 @@ async function syncZohoContactToUpmind(payload: JsonRecord, env: Env): Promise<v
 }
 
 async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<void> {
-  const zohoTicketId = deepReadString(payload, ['data', 'id']) ?? deepReadString(payload, ['id']);
-  const zohoContactId = deepReadString(payload, ['data', 'contactId']) ?? deepReadString(payload, ['contactId']);
+  const zohoTicketId = extractZohoTicketId(payload);
+  const zohoContactId = extractZohoContactId(payload);
 
   if (!zohoTicketId) return;
 
@@ -410,12 +422,12 @@ async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<vo
        zoho_contact_id = excluded.zoho_contact_id,
        last_status = excluded.last_status,
        updated_at = CURRENT_TIMESTAMP`
-  ).bind(upmindTicketId, zohoTicketId, zohoContactId ?? null, 'open').run();
+  ).bind(upmindTicketId, zohoTicketId, zohoContactId ?? null, extractZohoStatus(payload) ?? 'open').run();
 }
 
 async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<void> {
-  const zohoTicketId = deepReadString(payload, ['data', 'ticketId']) ?? deepReadString(payload, ['ticketId']);
-  const zohoMessageId = deepReadString(payload, ['data', 'id']) ?? deepReadString(payload, ['id']);
+  const zohoTicketId = extractZohoTicketId(payload);
+  const zohoMessageId = extractZohoMessageId(payload);
 
   if (!zohoTicketId || !zohoMessageId) return;
 
@@ -433,8 +445,8 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
 }
 
 async function syncZohoStatusToUpmind(payload: JsonRecord, env: Env): Promise<void> {
-  const zohoTicketId = deepReadString(payload, ['data', 'id']) ?? deepReadString(payload, ['id']);
-  const status = deepReadString(payload, ['data', 'status']) ?? deepReadString(payload, ['status']);
+  const zohoTicketId = extractZohoTicketId(payload);
+  const status = extractZohoStatus(payload);
 
   if (!zohoTicketId || !status) return;
 
@@ -484,6 +496,125 @@ function hasZohoConfig(env: Env): boolean {
   return Boolean(env.ZDK_BASE_URL && env.ZDK_ACCESS_TOKEN && env.ZDK_ORG_ID && env.ZDK_DEPARTMENT_ID);
 }
 
+function extractUpmindTicketId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'ticket', 'id']),
+    deepReadString(payload, ['ticket', 'id']),
+    recursiveFindString(payload, ['ticketId', 'ticket_id'])
+  ]);
+}
+
+function extractUpmindClientId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'client', 'id']),
+    deepReadString(payload, ['client', 'id']),
+    deepReadString(payload, ['data', 'customer', 'id']),
+    deepReadString(payload, ['customer', 'id']),
+    recursiveFindString(payload, ['clientId', 'client_id', 'customerId', 'customer_id'])
+  ]);
+}
+
+function extractUpmindMessageId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'message', 'id']),
+    deepReadString(payload, ['message', 'id']),
+    deepReadString(payload, ['data', 'reply', 'id']),
+    deepReadString(payload, ['reply', 'id']),
+    recursiveFindString(payload, ['messageId', 'message_id', 'replyId', 'reply_id'])
+  ]);
+}
+
+function extractUpmindEmail(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'client', 'email']),
+    deepReadString(payload, ['client', 'email']),
+    deepReadString(payload, ['data', 'customer', 'email']),
+    deepReadString(payload, ['customer', 'email']),
+    deepReadString(payload, ['email']),
+    recursiveFindString(payload, ['email'])
+  ]);
+}
+
+function extractUpmindSubject(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'ticket', 'subject']),
+    deepReadString(payload, ['ticket', 'subject']),
+    deepReadString(payload, ['data', 'ticket', 'title']),
+    deepReadString(payload, ['ticket', 'title']),
+    deepReadString(payload, ['subject']),
+    deepReadString(payload, ['title']),
+    recursiveFindString(payload, ['subject', 'title'])
+  ]);
+}
+
+function extractUpmindDescription(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'ticket', 'description']),
+    deepReadString(payload, ['ticket', 'description']),
+    deepReadString(payload, ['data', 'ticket', 'message']),
+    deepReadString(payload, ['ticket', 'message']),
+    deepReadString(payload, ['data', 'message', 'content']),
+    deepReadString(payload, ['message', 'content']),
+    deepReadString(payload, ['description']),
+    deepReadString(payload, ['content']),
+    deepReadString(payload, ['body']),
+    recursiveFindString(payload, ['description', 'content', 'body', 'message'])
+  ]);
+}
+
+function extractUpmindStatus(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'ticket', 'status']),
+    deepReadString(payload, ['ticket', 'status']),
+    deepReadString(payload, ['status']),
+    recursiveFindString(payload, ['status', 'ticketStatus', 'ticket_status'])
+  ]);
+}
+
+function extractZohoTicketId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'id']),
+    deepReadString(payload, ['id']),
+    deepReadString(payload, ['data', 'ticketId']),
+    deepReadString(payload, ['ticketId']),
+    recursiveFindString(payload, ['ticketId', 'ticket_id'])
+  ]);
+}
+
+function extractZohoContactId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'contactId']),
+    deepReadString(payload, ['contactId']),
+    recursiveFindString(payload, ['contactId', 'contact_id'])
+  ]);
+}
+
+function extractZohoMessageId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'threadId']),
+    deepReadString(payload, ['threadId']),
+    deepReadString(payload, ['data', 'commentId']),
+    deepReadString(payload, ['commentId']),
+    recursiveFindString(payload, ['threadId', 'thread_id', 'commentId', 'comment_id', 'messageId', 'message_id'])
+  ]);
+}
+
+function extractZohoEmail(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'email']),
+    deepReadString(payload, ['email']),
+    recursiveFindString(payload, ['email'])
+  ]);
+}
+
+function extractZohoStatus(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['data', 'status']),
+    deepReadString(payload, ['status']),
+    recursiveFindString(payload, ['status'])
+  ]);
+}
+
 function mapUpmindStatusToZoho(status?: string): string {
   const value = (status ?? '').toLowerCase();
 
@@ -495,13 +626,59 @@ function mapUpmindStatusToZoho(status?: string): string {
   return 'Open';
 }
 
-function firstString(source: JsonRecord, paths: string[][]): string | undefined {
-  for (const path of paths) {
-    const value = deepReadString(source, path);
-    if (value) return value;
+function previewPayload(payload: JsonRecord): string {
+  try {
+    const text = JSON.stringify(payload);
+    return text.length > 800 ? `${text.slice(0, 800)}...` : text;
+  } catch {
+    return '[unserializable]';
+  }
+}
+
+function recursiveFindString(value: unknown, keys: string[], depth = 0): string | undefined {
+  if (depth > 6 || value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = recursiveFindString(item, keys, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  if (typeof value !== 'object') {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  for (const [key, nested] of Object.entries(record)) {
+    if (keys.includes(key)) {
+      const stringValue = readStringLike(nested);
+      if (stringValue) return stringValue;
+    }
+  }
+
+  for (const nested of Object.values(record)) {
+    const found = recursiveFindString(nested, keys, depth + 1);
+    if (found) return found;
   }
 
   return undefined;
+}
+
+function firstNonEmpty(values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function normalizeEventName(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 async function computeEventKey(origin: string, request: Request, payload: JsonRecord): Promise<string> {
@@ -557,6 +734,12 @@ function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function readStringLike(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
 function deepReadString(source: JsonRecord, path: string[]): string | undefined {
   let current: unknown = source;
 
@@ -568,7 +751,7 @@ function deepReadString(source: JsonRecord, path: string[]): string | undefined 
     current = (current as Record<string, unknown>)[key];
   }
 
-  return readString(current);
+  return readStringLike(current);
 }
 
 function json(data: unknown, status = 200): Response {
