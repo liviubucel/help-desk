@@ -3,6 +3,7 @@
   "name": "help-desk",
   "main": "src/index.ts",
   "compatibility_date": "2026-04-02",
+  "keep_vars": true,
   "observability": {
     "enabled": true
   },
@@ -13,11 +14,7 @@
       "database_id": "7dc29f69-8c4f-407e-acd7-fe8dce7619b1",
       "migrations_dir": "migrations"
     }
-  ]
-}
-
-],
-"keep_vars": true,
+  ],
   "vars": {
     "UPMIND_API_BASE_URL": "https://api.upmind.io/api",
     "ZDK_BASE_URL": "https://desk.zoho.com/api/v1",
@@ -35,4 +32,3 @@
     ]
   }
 }
-
