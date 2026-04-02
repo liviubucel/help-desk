@@ -1,0 +1,10 @@
+UPMIND_API_BASE_URL=https://api.upmind.io/api
+UPMIND_API_TOKEN=replace_me
+UPMIND_WEBHOOK_SECRET=replace_me
+ZDK_BASE_URL=https://desk.zoho.com/api/v1
+ZDK_ORG_ID=replace_me
+ZDK_DEPARTMENT_ID=replace_me
+ZDK_ACCESS_TOKEN=replace_me
+ZDK_WEBHOOK_AUDIENCE=webhookId:replace_me
+ZDK_WEBHOOK_ISSUER=orgId:replace_me
+ZDK_IGNORE_SOURCE_ID=replace-with-a-stable-uuid
