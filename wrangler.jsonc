@@ -15,4 +15,24 @@
     }
   ]
 }
- "keep_vars": true,
+
+],
+"keep_vars": true,
+  "vars": {
+    "UPMIND_API_BASE_URL": "https://api.upmind.io/api",
+    "ZDK_BASE_URL": "https://desk.zoho.com/api/v1",
+    "ZDK_ORG_ID": "PUNE_AICI",
+    "ZDK_DEPARTMENT_ID": "PUNE_AICI",
+    "ZDK_WEBHOOK_AUDIENCE": "PUNE_AICI",
+    "ZDK_WEBHOOK_ISSUER": "PUNE_AICI",
+    "ZDK_IGNORE_SOURCE_ID": "PUNE_UN_UUID_STABIL"
+  },
+  "secrets": {
+    "required": [
+      "UPMIND_API_TOKEN",
+      "UPMIND_WEBHOOK_SECRET",
+      "ZDK_ACCESS_TOKEN"
+    ]
+  }
+}
+
