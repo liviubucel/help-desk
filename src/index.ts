@@ -313,22 +313,22 @@ async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<vo
   ).bind(ticketId).first<{ zoho_ticket_id?: string }>();
 
   let zohoTicketId = existing?.zoho_ticket_id;
-  if (hasZohoConfig(env) && email) {
-    await syncUpmindClientToZoho(payload, env);
-  }
-
-  const zohoContactId = (clientId || email)
-    ? (await env.BRIDGE_DB.prepare(
-      'SELECT zoho_contact_id FROM contact_map WHERE upmind_client_id = ?1 OR email = ?2 LIMIT 1'
-    ).bind(clientId ?? null, email ?? null).first<{ zoho_contact_id?: string }>())?.zoho_contact_id
-    : undefined;
-
   if ((!zohoTicketId || zohoTicketId.startsWith('pending-')) && hasZohoConfig(env)) {
+    if (email) {
+      await syncUpmindClientToZoho(payload, env);
+    }
+
+    const zohoContactId = (clientId || email)
+      ? (await env.BRIDGE_DB.prepare(
+        'SELECT zoho_contact_id FROM contact_map WHERE upmind_client_id = ?1 OR email = ?2 LIMIT 1'
+      ).bind(clientId ?? null, email ?? null).first<{ zoho_contact_id?: string }>())?.zoho_contact_id
+      : undefined;
+
     if (!zohoContactId) {
-      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: no Zoho contact mapping found`);
+      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: no Zoho contact mapping found; sync/create the contact first`);
     }
     if (zohoContactId.startsWith('pending-')) {
-      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: Zoho contact mapping is pending (${zohoContactId})`);
+      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: Zoho contact mapping is pending (${zohoContactId}); contact sync must complete first`);
     }
 
     const body: JsonRecord = {
@@ -369,15 +369,11 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
 
   if (!ticketId || !messageId) return;
 
-  let ticket = await env.BRIDGE_DB.prepare(
-    'SELECT id, zoho_ticket_id FROM ticket_map WHERE upmind_ticket_id = ?1 LIMIT 1'
-  ).bind(ticketId).first<{ id: number; zoho_ticket_id?: string }>();
+  let ticket = await getTicketMapByUpmindTicketId(env, ticketId);
 
   if (!ticket && hasZohoConfig(env)) {
     await syncUpmindTicketToZoho(payload, env);
-    ticket = await env.BRIDGE_DB.prepare(
-      'SELECT id, zoho_ticket_id FROM ticket_map WHERE upmind_ticket_id = ?1 LIMIT 1'
-    ).bind(ticketId).first<{ id: number; zoho_ticket_id?: string }>();
+    ticket = await getTicketMapByUpmindTicketId(env, ticketId);
   }
 
   if (!ticket) {
@@ -578,7 +574,7 @@ async function resolveOrCreateZohoContactId(env: Env, payload: JsonRecord, email
 
   const created = await zohoRequest(env, 'POST', '/contacts', {
     email,
-    lastName: extractUpmindLastName(payload) ?? clientId
+    lastName: extractUpmindLastName(payload) ?? 'Unknown'
   });
 
   return readString(created.id) ?? deepReadString(created, ['data', 'id']);
@@ -589,6 +585,12 @@ function readZohoIdFromArray(value: unknown): string | undefined {
   const first = value[0];
   if (!isRecord(first)) return undefined;
   return readStringLike(first.id);
+}
+
+async function getTicketMapByUpmindTicketId(env: Env, ticketId: string): Promise<{ id: number; zoho_ticket_id?: string } | null> {
+  return env.BRIDGE_DB.prepare(
+    'SELECT id, zoho_ticket_id FROM ticket_map WHERE upmind_ticket_id = ?1 LIMIT 1'
+  ).bind(ticketId).first<{ id: number; zoho_ticket_id?: string }>();
 }
 
 function extractUpmindTicketId(payload: JsonRecord): string | undefined {
