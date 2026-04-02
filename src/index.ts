@@ -43,7 +43,8 @@ export default {
 };
 
 async function handleUpmindWebhook(request: Request, env: Env): Promise<Response> {
-  const payload = await request.json<JsonRecord>();
+  await ensureSchema(env);
+  const payload = await readPayload(request);
   const eventName = readString(payload.event) ?? readString(payload.name) ?? 'upmind.unknown';
   const eventKey = await computeEventKey('upmind', request, payload);
 
@@ -85,8 +86,8 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
 }
 
 async function handleZohoWebhook(request: Request, env: Env): Promise<Response> {
-  // TODO: verify X-ZDesk-JWT against Zoho's JWK set before production use.
-  const payload = await request.json<JsonRecord>();
+  await ensureSchema(env);
+  const payload = await readPayload(request);
   const eventName = readString(payload.eventName) ?? readString(payload.eventType) ?? 'zoho.unknown';
   const eventKey = await computeEventKey('zoho', request, payload);
 
@@ -119,6 +120,87 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
   return json({ ok: true, source: 'zoho', eventName, eventKey });
 }
 
+async function ensureSchema(env: Env): Promise<void> {
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS contact_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      upmind_client_id TEXT UNIQUE,
+      zoho_contact_id TEXT UNIQUE,
+      email TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS ticket_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      upmind_ticket_id TEXT UNIQUE,
+      zoho_ticket_id TEXT UNIQUE,
+      upmind_client_id TEXT,
+      zoho_contact_id TEXT,
+      last_status TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS message_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      upmind_message_id TEXT UNIQUE,
+      zoho_message_id TEXT UNIQUE,
+      ticket_map_id INTEGER,
+      origin_system TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS processed_events (
+      event_key TEXT PRIMARY KEY,
+      origin_system TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS raw_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      origin_system TEXT NOT NULL,
+      event_name TEXT,
+      event_key TEXT,
+      payload_json TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_contact_map_email ON contact_map(email)').run();
+  await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_ticket_map_upmind_client_id ON ticket_map(upmind_client_id)').run();
+  await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_ticket_map_id ON message_map(ticket_map_id)').run();
+}
+
+async function readPayload(request: Request): Promise<JsonRecord> {
+  const raw = await request.text();
+
+  if (!raw || raw.trim().length === 0) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isRecord(parsed) ? parsed : { value: parsed };
+  } catch {
+    const params = new URLSearchParams(raw);
+    const payload: JsonRecord = {};
+    for (const [key, value] of params.entries()) {
+      payload[key] = value;
+    }
+    return payload;
+  }
+}
+
 async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<void> {
   const clientId = deepReadString(payload, ['data', 'client', 'id']) ?? deepReadString(payload, ['client', 'id']);
   const email = deepReadString(payload, ['data', 'client', 'email']) ?? deepReadString(payload, ['client', 'email']);
@@ -127,9 +209,7 @@ async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<vo
 
   const existing = await env.BRIDGE_DB.prepare(
     'SELECT zoho_contact_id FROM contact_map WHERE upmind_client_id = ?1 OR email = ?2 LIMIT 1'
-  )
-    .bind(clientId, email)
-    .first<{ zoho_contact_id?: string }>();
+  ).bind(clientId, email).first<{ zoho_contact_id?: string }>();
 
   const zohoContactId = existing?.zoho_contact_id ?? `pending-zoho-${clientId}`;
 
@@ -140,9 +220,7 @@ async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<vo
        zoho_contact_id = excluded.zoho_contact_id,
        email = excluded.email,
        updated_at = CURRENT_TIMESTAMP`
-  )
-    .bind(clientId, zohoContactId, email)
-    .run();
+  ).bind(clientId, zohoContactId, email).run();
 }
 
 async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<void> {
@@ -153,9 +231,7 @@ async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<vo
 
   const existing = await env.BRIDGE_DB.prepare(
     'SELECT zoho_ticket_id FROM ticket_map WHERE upmind_ticket_id = ?1 LIMIT 1'
-  )
-    .bind(ticketId)
-    .first<{ zoho_ticket_id?: string }>();
+  ).bind(ticketId).first<{ zoho_ticket_id?: string }>();
 
   const zohoTicketId = existing?.zoho_ticket_id ?? `pending-zoho-ticket-${ticketId}`;
 
@@ -167,9 +243,7 @@ async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<vo
        upmind_client_id = excluded.upmind_client_id,
        last_status = excluded.last_status,
        updated_at = CURRENT_TIMESTAMP`
-  )
-    .bind(ticketId, zohoTicketId, clientId ?? null, 'open')
-    .run();
+  ).bind(ticketId, zohoTicketId, clientId ?? null, 'open').run();
 }
 
 async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<void> {
@@ -180,9 +254,7 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
 
   const ticket = await env.BRIDGE_DB.prepare(
     'SELECT id, zoho_ticket_id FROM ticket_map WHERE upmind_ticket_id = ?1 LIMIT 1'
-  )
-    .bind(ticketId)
-    .first<{ id: number; zoho_ticket_id?: string }>();
+  ).bind(ticketId).first<{ id: number; zoho_ticket_id?: string }>();
 
   if (!ticket) return;
 
@@ -190,9 +262,7 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
     `INSERT INTO message_map (upmind_message_id, zoho_message_id, ticket_map_id, origin_system)
      VALUES (?1, ?2, ?3, 'upmind')
      ON CONFLICT(upmind_message_id) DO NOTHING`
-  )
-    .bind(messageId, `pending-zoho-message-${messageId}`, ticket.id)
-    .run();
+  ).bind(messageId, `pending-zoho-message-${messageId}`, ticket.id).run();
 }
 
 async function syncUpmindStatusToZoho(payload: JsonRecord, env: Env): Promise<void> {
@@ -203,9 +273,7 @@ async function syncUpmindStatusToZoho(payload: JsonRecord, env: Env): Promise<vo
 
   await env.BRIDGE_DB.prepare(
     'UPDATE ticket_map SET last_status = ?2, updated_at = CURRENT_TIMESTAMP WHERE upmind_ticket_id = ?1'
-  )
-    .bind(ticketId, status)
-    .run();
+  ).bind(ticketId, status).run();
 }
 
 async function syncZohoContactToUpmind(payload: JsonRecord, env: Env): Promise<void> {
@@ -216,9 +284,7 @@ async function syncZohoContactToUpmind(payload: JsonRecord, env: Env): Promise<v
 
   const existing = await env.BRIDGE_DB.prepare(
     'SELECT upmind_client_id FROM contact_map WHERE zoho_contact_id = ?1 OR email = ?2 LIMIT 1'
-  )
-    .bind(zohoContactId, email)
-    .first<{ upmind_client_id?: string }>();
+  ).bind(zohoContactId, email).first<{ upmind_client_id?: string }>();
 
   const upmindClientId = existing?.upmind_client_id ?? `pending-upmind-${zohoContactId}`;
 
@@ -229,9 +295,7 @@ async function syncZohoContactToUpmind(payload: JsonRecord, env: Env): Promise<v
        upmind_client_id = excluded.upmind_client_id,
        email = excluded.email,
        updated_at = CURRENT_TIMESTAMP`
-  )
-    .bind(upmindClientId, zohoContactId, email)
-    .run();
+  ).bind(upmindClientId, zohoContactId, email).run();
 }
 
 async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<void> {
@@ -242,9 +306,7 @@ async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<vo
 
   const existing = await env.BRIDGE_DB.prepare(
     'SELECT upmind_ticket_id FROM ticket_map WHERE zoho_ticket_id = ?1 LIMIT 1'
-  )
-    .bind(zohoTicketId)
-    .first<{ upmind_ticket_id?: string }>();
+  ).bind(zohoTicketId).first<{ upmind_ticket_id?: string }>();
 
   const upmindTicketId = existing?.upmind_ticket_id ?? `pending-upmind-ticket-${zohoTicketId}`;
 
@@ -256,9 +318,7 @@ async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<vo
        zoho_contact_id = excluded.zoho_contact_id,
        last_status = excluded.last_status,
        updated_at = CURRENT_TIMESTAMP`
-  )
-    .bind(upmindTicketId, zohoTicketId, zohoContactId ?? null, 'open')
-    .run();
+  ).bind(upmindTicketId, zohoTicketId, zohoContactId ?? null, 'open').run();
 }
 
 async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<void> {
@@ -269,9 +329,7 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
 
   const ticket = await env.BRIDGE_DB.prepare(
     'SELECT id, upmind_ticket_id FROM ticket_map WHERE zoho_ticket_id = ?1 LIMIT 1'
-  )
-    .bind(zohoTicketId)
-    .first<{ id: number; upmind_ticket_id?: string }>();
+  ).bind(zohoTicketId).first<{ id: number; upmind_ticket_id?: string }>();
 
   if (!ticket) return;
 
@@ -279,9 +337,7 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
     `INSERT INTO message_map (upmind_message_id, zoho_message_id, ticket_map_id, origin_system)
      VALUES (?1, ?2, ?3, 'zoho')
      ON CONFLICT(zoho_message_id) DO NOTHING`
-  )
-    .bind(`pending-upmind-message-${zohoMessageId}`, zohoMessageId, ticket.id)
-    .run();
+  ).bind(`pending-upmind-message-${zohoMessageId}`, zohoMessageId, ticket.id).run();
 }
 
 async function syncZohoStatusToUpmind(payload: JsonRecord, env: Env): Promise<void> {
@@ -292,9 +348,7 @@ async function syncZohoStatusToUpmind(payload: JsonRecord, env: Env): Promise<vo
 
   await env.BRIDGE_DB.prepare(
     'UPDATE ticket_map SET last_status = ?2, updated_at = CURRENT_TIMESTAMP WHERE zoho_ticket_id = ?1'
-  )
-    .bind(zohoTicketId, status)
-    .run();
+  ).bind(zohoTicketId, status).run();
 }
 
 async function computeEventKey(origin: string, request: Request, payload: JsonRecord): Promise<string> {
@@ -313,9 +367,7 @@ async function computeEventKey(origin: string, request: Request, payload: JsonRe
 async function isDuplicate(env: Env, eventKey: string): Promise<boolean> {
   const row = await env.BRIDGE_DB.prepare(
     'SELECT event_key FROM processed_events WHERE event_key = ?1 LIMIT 1'
-  )
-    .bind(eventKey)
-    .first();
+  ).bind(eventKey).first();
 
   return Boolean(row);
 }
@@ -324,24 +376,18 @@ async function markProcessed(env: Env, eventKey: string, originSystem: string): 
   await env.BRIDGE_DB.prepare(
     `INSERT OR IGNORE INTO processed_events (event_key, origin_system, expires_at)
      VALUES (?1, ?2, datetime('now', '+14 day'))`
-  )
-    .bind(eventKey, originSystem)
-    .run();
+  ).bind(eventKey, originSystem).run();
 }
 
-async function storeRawEvent(
-  env: Env,
-  originSystem: string,
-  eventName: string,
-  eventKey: string,
-  payload: JsonRecord
-): Promise<void> {
+async function storeRawEvent(env: Env, originSystem: string, eventName: string, eventKey: string, payload: JsonRecord): Promise<void> {
   await env.BRIDGE_DB.prepare(
     `INSERT INTO raw_events (origin_system, event_name, event_key, payload_json)
      VALUES (?1, ?2, ?3, ?4)`
-  )
-    .bind(originSystem, eventName, eventKey, JSON.stringify(payload))
-    .run();
+  ).bind(originSystem, eventName, eventKey, JSON.stringify(payload)).run();
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function readString(value: unknown): string | undefined {
