@@ -436,7 +436,18 @@ async function syncZohoContactToUpmind(payload: JsonRecord, env: Env): Promise<v
   let upmindClientId = existing?.upmind_client_id;
 
   if ((!upmindClientId || upmindClientId.startsWith('pending-')) && hasUpmindConfig(env)) {
-    upmindClientId = await resolveOrCreateUpmindClientId(env, payload, email, zohoContactId);
+    try {
+      upmindClientId = await resolveOrCreateUpmindClientId(env, payload, email, zohoContactId);
+    } catch (error) {
+      console.log(JSON.stringify({
+        source: 'upmind-api',
+        action: 'resolve-or-create-client',
+        ok: false,
+        email,
+        zohoContactId,
+        error: String(error)
+      }));
+    }
   } else if (!hasUpmindConfig(env)) {
     console.log(JSON.stringify({ source: 'upmind-api', skipped: true, reason: 'missing-config', missing: missingUpmindConfig(env) }));
   }
@@ -474,16 +485,26 @@ async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<vo
       ).bind(zohoContactId).first<{ upmind_client_id?: string }>())?.upmind_client_id;
     }
 
-    const created = await upmindRequest(env, 'POST', '/tickets', stripUndefined({
-      clientId: upmindClientId,
-      subject: extractZohoSubject(payload) ?? `Zoho ticket ${zohoTicketId}`,
-      description: extractZohoDescription(payload) ?? 'Imported from Zoho webhook',
-      status
-    }));
-    upmindTicketId = readString(created.id)
-      ?? deepReadString(created, ['data', 'id'])
-      ?? deepReadString(created, ['ticket', 'id'])
-      ?? upmindTicketId;
+    try {
+      const created = await upmindRequest(env, 'POST', '/tickets', stripUndefined({
+        clientId: upmindClientId,
+        subject: extractZohoSubject(payload) ?? `Zoho ticket ${zohoTicketId}`,
+        description: extractZohoDescription(payload) ?? 'Imported from Zoho webhook',
+        status
+      }));
+      upmindTicketId = readString(created.id)
+        ?? deepReadString(created, ['data', 'id'])
+        ?? deepReadString(created, ['ticket', 'id'])
+        ?? upmindTicketId;
+    } catch (error) {
+      console.log(JSON.stringify({
+        source: 'upmind-api',
+        action: 'create-ticket',
+        ok: false,
+        zohoTicketId,
+        error: String(error)
+      }));
+    }
   } else if (!hasUpmindConfig(env)) {
     console.log(JSON.stringify({ source: 'upmind-api', skipped: true, reason: 'missing-config', missing: missingUpmindConfig(env) }));
   }
@@ -515,12 +536,23 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
 
   let upmindMessageId: string | undefined;
   if (ticket.upmind_ticket_id && !ticket.upmind_ticket_id.startsWith('pending-') && hasUpmindConfig(env)) {
-    const created = await upmindRequest(env, 'POST', `/tickets/${encodeURIComponent(ticket.upmind_ticket_id)}/messages`, {
-      content: extractZohoDescription(payload) ?? 'Imported from Zoho'
-    });
-    upmindMessageId = readString(created.id)
-      ?? deepReadString(created, ['data', 'id'])
-      ?? deepReadString(created, ['message', 'id']);
+    try {
+      const created = await upmindRequest(env, 'POST', `/tickets/${encodeURIComponent(ticket.upmind_ticket_id)}/messages`, {
+        content: extractZohoDescription(payload) ?? 'Imported from Zoho'
+      });
+      upmindMessageId = readString(created.id)
+        ?? deepReadString(created, ['data', 'id'])
+        ?? deepReadString(created, ['message', 'id']);
+    } catch (error) {
+      console.log(JSON.stringify({
+        source: 'upmind-api',
+        action: 'create-message',
+        ok: false,
+        upmindTicketId: ticket.upmind_ticket_id,
+        zohoMessageId,
+        error: String(error)
+      }));
+    }
   } else if (!hasUpmindConfig(env)) {
     console.log(JSON.stringify({ source: 'upmind-api', skipped: true, reason: 'missing-config', missing: missingUpmindConfig(env) }));
   }
@@ -543,7 +575,18 @@ async function syncZohoStatusToUpmind(payload: JsonRecord, env: Env): Promise<vo
   ).bind(zohoTicketId).first<{ upmind_ticket_id?: string }>();
 
   if (ticket?.upmind_ticket_id && !ticket.upmind_ticket_id.startsWith('pending-') && hasUpmindConfig(env)) {
-    await upmindRequest(env, 'PATCH', `/tickets/${encodeURIComponent(ticket.upmind_ticket_id)}`, { status });
+    try {
+      await upmindRequest(env, 'PATCH', `/tickets/${encodeURIComponent(ticket.upmind_ticket_id)}`, { status });
+    } catch (error) {
+      console.log(JSON.stringify({
+        source: 'upmind-api',
+        action: 'update-ticket-status',
+        ok: false,
+        upmindTicketId: ticket.upmind_ticket_id,
+        status,
+        error: String(error)
+      }));
+    }
   } else if (!hasUpmindConfig(env)) {
     console.log(JSON.stringify({ source: 'upmind-api', skipped: true, reason: 'missing-config', missing: missingUpmindConfig(env) }));
   }
@@ -668,23 +711,35 @@ function configStatus(env: Env): JsonRecord {
 }
 
 async function resolveOrCreateUpmindClientId(env: Env, payload: JsonRecord, email: string, zohoContactId: string): Promise<string | undefined> {
-  const encodedEmail = encodeURIComponent(email);
-  const existing = await upmindRequest(env, 'GET', `/clients?email=${encodedEmail}`);
-  const fromSearch = readString(existing.id)
-    ?? deepReadString(existing, ['data', 'id'])
-    ?? deepReadString(existing, ['client', 'id'])
-    ?? readUpmindIdFromArray(existing.data);
+  try {
+    const encodedEmail = encodeURIComponent(email);
+    const existing = await upmindRequest(env, 'GET', `/clients?email=${encodedEmail}`);
+    const fromSearch = readString(existing.id)
+      ?? deepReadString(existing, ['data', 'id'])
+      ?? deepReadString(existing, ['client', 'id'])
+      ?? readUpmindIdFromArray(existing.data);
 
-  if (fromSearch) return fromSearch;
+    if (fromSearch) return fromSearch;
 
-  const created = await upmindRequest(env, 'POST', '/clients', {
-    email,
-    lastName: extractUpmindLastName(payload) ?? `Zoho-${zohoContactId}`
-  });
+    const created = await upmindRequest(env, 'POST', '/clients', {
+      email,
+      lastName: extractUpmindLastName(payload) ?? `Zoho-${zohoContactId}`
+    });
 
-  return readString(created.id)
-    ?? deepReadString(created, ['data', 'id'])
-    ?? deepReadString(created, ['client', 'id']);
+    return readString(created.id)
+      ?? deepReadString(created, ['data', 'id'])
+      ?? deepReadString(created, ['client', 'id']);
+  } catch (error) {
+    console.log(JSON.stringify({
+      source: 'upmind-api',
+      action: 'resolve-or-create-client',
+      ok: false,
+      email,
+      zohoContactId,
+      error: String(error)
+    }));
+    return undefined;
+  }
 }
 
 function readUpmindIdFromArray(value: unknown): string | undefined {
