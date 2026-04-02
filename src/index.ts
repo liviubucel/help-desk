@@ -19,15 +19,20 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, service: 'help-desk-bridge', time: new Date().toISOString() });
+      return json({
+        ok: true,
+        service: 'help-desk-bridge',
+        time: new Date().toISOString(),
+        config: configStatus(env)
+      });
     }
 
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/webhooks/zoho') {
-      return json({ ok: true, webhook: 'zoho', validation: true });
+      return json({ ok: true, webhook: 'zoho', validation: true, config: configStatus(env) });
     }
 
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/webhooks/upmind') {
-      return json({ ok: true, webhook: 'upmind', validation: true });
+      return json({ ok: true, webhook: 'upmind', validation: true, config: configStatus(env) });
     }
 
     if (request.method === 'POST' && url.pathname === '/webhooks/upmind') {
@@ -72,6 +77,7 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     ticketId,
     messageId,
     clientId,
+    config: configStatus(env),
     keys: Object.keys(payload).slice(0, 20),
     preview: previewPayload(payload)
   }));
@@ -110,7 +116,7 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
       break;
   }
 
-  return json({ ok: true, source: 'upmind', eventName, eventKey, ticketId, messageId, clientId });
+  return json({ ok: true, source: 'upmind', eventName, eventKey, ticketId, messageId, clientId, config: configStatus(env) });
 }
 
 async function handleZohoWebhook(request: Request, env: Env): Promise<Response> {
@@ -147,6 +153,7 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
     contactId,
     messageId,
     status,
+    config: configStatus(env),
     keys: Object.keys(payload).slice(0, 20),
     preview: previewPayload(payload)
   }));
@@ -179,7 +186,7 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
       break;
   }
 
-  return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status });
+  return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status, config: configStatus(env) });
 }
 
 async function ensureSchema(env: Env): Promise<void> {
@@ -315,6 +322,8 @@ async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<vo
 
     const created = await zohoRequest(env, 'POST', '/tickets', body);
     zohoTicketId = readString(created.id) ?? deepReadString(created, ['data', 'id']) ?? zohoTicketId;
+  } else if (!hasZohoConfig(env)) {
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env) }));
   }
 
   zohoTicketId = zohoTicketId ?? `pending-zoho-ticket-${ticketId}`;
@@ -351,6 +360,8 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
       isPublic: true
     });
     zohoMessageId = readString(created.id) ?? deepReadString(created, ['data', 'id']);
+  } else if (!hasZohoConfig(env)) {
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env) }));
   }
 
   await env.BRIDGE_DB.prepare(
@@ -373,6 +384,8 @@ async function syncUpmindStatusToZoho(payload: JsonRecord, env: Env): Promise<vo
 
   if (ticket?.zoho_ticket_id && !ticket.zoho_ticket_id.startsWith('pending-') && hasZohoConfig(env)) {
     await zohoRequest(env, 'PATCH', `/tickets/${ticket.zoho_ticket_id}`, { status });
+  } else if (!hasZohoConfig(env)) {
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env) }));
   }
 
   await env.BRIDGE_DB.prepare(
@@ -457,6 +470,7 @@ async function syncZohoStatusToUpmind(payload: JsonRecord, env: Env): Promise<vo
 
 async function zohoRequest(env: Env, method: string, path: string, body?: JsonRecord): Promise<JsonRecord> {
   if (!hasZohoConfig(env)) {
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env) }));
     return {};
   }
 
@@ -493,7 +507,19 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
 }
 
 function hasZohoConfig(env: Env): boolean {
-  return Boolean(env.ZDK_BASE_URL && env.ZDK_ACCESS_TOKEN && env.ZDK_ORG_ID && env.ZDK_DEPARTMENT_ID);
+  return Boolean(env.ZDK_ACCESS_TOKEN && env.ZDK_ORG_ID && env.ZDK_DEPARTMENT_ID);
+}
+
+function configStatus(env: Env): JsonRecord {
+  return {
+    upmindApiBaseUrl: Boolean(env.UPMIND_API_BASE_URL),
+    upmindApiToken: Boolean(env.UPMIND_API_TOKEN),
+    upmindWebhookSecret: Boolean(env.UPMIND_WEBHOOK_SECRET),
+    zohoBaseUrl: Boolean(env.ZDK_BASE_URL),
+    zohoAccessToken: Boolean(env.ZDK_ACCESS_TOKEN),
+    zohoOrgId: Boolean(env.ZDK_ORG_ID),
+    zohoDepartmentId: Boolean(env.ZDK_DEPARTMENT_ID)
+  };
 }
 
 function extractUpmindTicketId(payload: JsonRecord): string | undefined {
