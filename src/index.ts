@@ -313,22 +313,22 @@ async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<vo
   ).bind(ticketId).first<{ zoho_ticket_id?: string }>();
 
   let zohoTicketId = existing?.zoho_ticket_id;
-  let zohoContactId: string | undefined;
-
   if (hasZohoConfig(env) && email) {
     await syncUpmindClientToZoho(payload, env);
   }
 
-  if (clientId || email) {
-    const contact = await env.BRIDGE_DB.prepare(
+  const zohoContactId = (clientId || email)
+    ? (await env.BRIDGE_DB.prepare(
       'SELECT zoho_contact_id FROM contact_map WHERE upmind_client_id = ?1 OR email = ?2 LIMIT 1'
-    ).bind(clientId ?? null, email ?? null).first<{ zoho_contact_id?: string }>();
-    zohoContactId = contact?.zoho_contact_id;
-  }
+    ).bind(clientId ?? null, email ?? null).first<{ zoho_contact_id?: string }>())?.zoho_contact_id
+    : undefined;
 
   if ((!zohoTicketId || zohoTicketId.startsWith('pending-')) && hasZohoConfig(env)) {
-    if (!zohoContactId || zohoContactId.startsWith('pending-')) {
-      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: missing resolved Zoho contact mapping`);
+    if (!zohoContactId) {
+      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: no Zoho contact mapping found`);
+    }
+    if (zohoContactId.startsWith('pending-')) {
+      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: Zoho contact mapping is pending (${zohoContactId})`);
     }
 
     const body: JsonRecord = {
@@ -395,7 +395,7 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
   } else if (!hasZohoConfig(env)) {
     console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
   } else {
-    throw new Error(`Cannot sync Upmind message ${messageId}: Zoho ticket is pending or empty content`);
+    throw new Error(`Cannot sync Upmind message ${messageId}: Zoho ticket is pending/missing or message content is empty`);
   }
 
   await env.BRIDGE_DB.prepare(
