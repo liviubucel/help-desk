@@ -9,8 +9,8 @@
   "d1_databases": [
     {
       "binding": "BRIDGE_DB",
-      "database_name": "helpdesk_bridge",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_name": "help-desk",
+      "database_id": "7dc29f69-8c4f-407e-acd7-fe8dce7619b1",
       "migrations_dir": "migrations"
     }
   ]
