@@ -77,7 +77,6 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     ticketId,
     messageId,
     clientId,
-    config: configStatus(env),
     keys: Object.keys(payload).slice(0, 20),
     preview: previewPayload(payload)
   }));
@@ -116,7 +115,7 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
       break;
   }
 
-  return json({ ok: true, source: 'upmind', eventName, eventKey, ticketId, messageId, clientId, config: configStatus(env) });
+  return json({ ok: true, source: 'upmind', eventName, eventKey, ticketId, messageId, clientId });
 }
 
 async function handleZohoWebhook(request: Request, env: Env): Promise<Response> {
@@ -153,7 +152,6 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
     contactId,
     messageId,
     status,
-    config: configStatus(env),
     keys: Object.keys(payload).slice(0, 20),
     preview: previewPayload(payload)
   }));
@@ -186,7 +184,7 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
       break;
   }
 
-  return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status, config: configStatus(env) });
+  return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status });
 }
 
 async function ensureSchema(env: Env): Promise<void> {
@@ -285,7 +283,7 @@ async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<vo
   if ((!zohoContactId || zohoContactId.startsWith('pending-')) && hasZohoConfig(env)) {
     zohoContactId = await resolveOrCreateZohoContactId(env, payload, email, clientId);
   } else if (!hasZohoConfig(env)) {
-    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env), missing: missingZohoConfig(env) }));
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
   }
 
   zohoContactId = zohoContactId ?? `pending-zoho-${clientId}`;
@@ -348,7 +346,7 @@ async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<vo
     const created = await zohoRequest(env, 'POST', '/tickets', body);
     zohoTicketId = readString(created.id) ?? deepReadString(created, ['data', 'id']) ?? zohoTicketId;
   } else if (!hasZohoConfig(env)) {
-    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env), missing: missingZohoConfig(env) }));
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
   }
 
   zohoTicketId = zohoTicketId ?? `pending-zoho-ticket-${ticketId}`;
@@ -395,7 +393,7 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
     });
     zohoMessageId = readString(created.id) ?? deepReadString(created, ['data', 'id']);
   } else if (!hasZohoConfig(env)) {
-    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env), missing: missingZohoConfig(env) }));
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
   } else {
     throw new Error(`Cannot sync Upmind message ${messageId}: Zoho ticket is pending or empty content`);
   }
@@ -421,7 +419,7 @@ async function syncUpmindStatusToZoho(payload: JsonRecord, env: Env): Promise<vo
   if (ticket?.zoho_ticket_id && !ticket.zoho_ticket_id.startsWith('pending-') && hasZohoConfig(env)) {
     await zohoRequest(env, 'PATCH', `/tickets/${ticket.zoho_ticket_id}`, { status });
   } else if (!hasZohoConfig(env)) {
-    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env), missing: missingZohoConfig(env) }));
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
   }
 
   await env.BRIDGE_DB.prepare(
@@ -507,7 +505,7 @@ async function syncZohoStatusToUpmind(payload: JsonRecord, env: Env): Promise<vo
 async function zohoRequest(env: Env, method: string, path: string, body?: JsonRecord): Promise<JsonRecord> {
   if (!hasZohoConfig(env)) {
     const missing = missingZohoConfig(env);
-    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', config: configStatus(env), missing }));
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing }));
     throw new Error(`Missing Zoho config: ${missing.join(', ')}`);
   }
 
