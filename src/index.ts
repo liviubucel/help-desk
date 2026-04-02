@@ -22,6 +22,14 @@ export default {
       return json({ ok: true, service: 'help-desk-bridge', time: new Date().toISOString() });
     }
 
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/webhooks/zoho') {
+      return json({ ok: true, webhook: 'zoho', validation: true });
+    }
+
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/webhooks/upmind') {
+      return json({ ok: true, webhook: 'upmind', validation: true });
+    }
+
     if (request.method === 'POST' && url.pathname === '/webhooks/upmind') {
       return handleUpmindWebhook(request, env);
     }
