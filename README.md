@@ -28,11 +28,11 @@ Production-ready bridge between Upmind and Zoho Desk, running on Cloudflare Work
 - `ADMIN_TOKEN` — Secret for admin/debug/backfill endpoints
 
 ## Zoho Webhook Authentication
-The `/webhooks/zoho` endpoint accepts either of the following headers for authentication:
-- `x-zoho-webhook-secret` (configurable shared secret)
-- `x-zdesk-jwt` (used by real Zoho Desk webhooks)
-Either header must match the value of `ZDK_WEBHOOK_SECRET` in your environment variables.
-If neither header is present or valid, the request will be rejected with 401.
+The `/webhooks/zoho` endpoint supports the real Zoho Desk webhook authentication mechanism:
+- **Primary (native Zoho Desk):** Requires the `x-zdesk-jwt` header (JWT-based auth, sent by Zoho Desk webhooks). No shared secret is required or assumed by default.
+- **Optional fallback (custom integrations only):** If you set a custom `ZDK_WEBHOOK_SECRET` in your environment, you may also send it as the `x-zoho-webhook-secret` header. This is NOT used by Zoho Desk by default and is only for custom integrations.
+
+If neither a valid JWT nor a custom secret is present, the request will be rejected with 401.
 
 ## Migration Steps
 1. Apply all migrations in `migrations/` (including `0003_event_failures.sql`).

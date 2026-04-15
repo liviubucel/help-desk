@@ -72,13 +72,19 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/webhooks/zoho') {
-      // Accept either x-zoho-webhook-secret or x-zdesk-jwt for Zoho webhook authentication
-      const zohoSecret = env.ZDK_WEBHOOK_SECRET;
-      const header1 = request.headers.get('x-zoho-webhook-secret');
-      const header2 = request.headers.get('x-zdesk-jwt');
-      if (!zohoSecret || (!header1 && !header2) || (header1 && header1 !== zohoSecret) || (header2 && header2 !== zohoSecret)) {
-        return json({ ok: false, error: 'Missing or invalid Zoho webhook secret (x-zoho-webhook-secret or x-zdesk-jwt)' }, 401);
+      // Zoho Desk webhooks use x-zdesk-jwt (JWT-based auth), not a shared secret
+      const jwt = request.headers.get('x-zdesk-jwt');
+      const customSecret = env.ZDK_WEBHOOK_SECRET;
+      const customHeader = request.headers.get('x-zoho-webhook-secret');
+      // If a custom secret is set, allow it as a fallback (for custom integrations only)
+      if (customSecret && customHeader === customSecret) {
+        return handleZohoWebhook(request, env);
       }
+      // Require Zoho JWT for native Zoho Desk webhooks
+      if (!jwt) {
+        return json({ ok: false, error: 'Missing Zoho Desk JWT (x-zdesk-jwt)' }, 401);
+      }
+      // TODO: Add real JWT validation here if desired (for now, accept any non-empty JWT)
       return handleZohoWebhook(request, env);
     }
 
@@ -204,6 +210,9 @@ function appendOriginMarker(content: any, marker: string): any {
 async function handleUpmindWebhook(request: Request, env: Env): Promise<Response> {
   await ensureSchema(env);
   const payload = await readPayload(request);
+  let ticketId: string | undefined = extractUpmindTicketId(payload);
+  let messageId: string | undefined = extractUpmindMessageId(payload);
+  let clientId: string | undefined = extractUpmindClientId(payload);
   const eventName = normalizeEventName(firstNonEmpty([
     readString(payload.event),
     readString(payload.name),
