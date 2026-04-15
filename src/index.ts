@@ -23,7 +23,7 @@ import { getZohoAccessToken } from './zoho-oauth';
 
 type JsonRecord = Record<string, unknown>;
 
-import { checkUpmindWebhookSignature } from './webhooks';
+import { checkUpmindWebhookSignature, recordEventFailure } from './webhooks';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -308,7 +308,8 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
 
 async function handleZohoWebhook(request: Request, env: Env): Promise<Response> {
   await ensureSchema(env);
-  const payload = await readPayload(request);
+  const rawPayload = await readPayload(request);
+  const payload = normalizeZohoPayload(rawPayload);
   const eventName = normalizeEventName(firstNonEmpty([
     readString(payload.eventName),
     readString(payload.eventType),
@@ -380,13 +381,31 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
   }
 
   return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status });
+}
+
+// Helper to normalize Zoho webhook payloads
+function normalizeZohoPayload(raw: any): any {
+  if (raw && typeof raw === 'object' && Array.isArray(raw.value) && raw.value.length > 0) {
+    // { value: [{ payload: ... }] }
+    if (raw.value[0] && typeof raw.value[0] === 'object' && 'payload' in raw.value[0]) {
+      return raw.value[0].payload;
+    }
+    // { value: [...] } (take first)
+    return raw.value[0];
+  }
+  // { payload: ... }
+  if (raw && typeof raw === 'object' && 'payload' in raw) {
+    return raw.payload;
+  }
+  return raw;
+}
+
 // Helper to append bridge-origin marker to content if not present
 function appendOriginMarker(content: any, marker: string): any {
   if (typeof content === 'string') {
     return content.includes(marker) ? content : `${content}\n${marker}`;
   }
   return content;
-}
 }
 
 async function ensureSchema(env: Env): Promise<void> {
@@ -735,7 +754,30 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
   const zohoTicketId = extractZohoTicketId(payload);
   const zohoMessageId = extractZohoMessageId(payload);
 
-  if (!zohoTicketId || !zohoMessageId) return;
+  if (!zohoTicketId || !zohoMessageId) {
+    // Log and persist failure for missing messageId
+    const errorMsg = `Missing required field(s) for Zoho reply sync: ticketId=${zohoTicketId}, messageId=${zohoMessageId}`;
+    console.warn(JSON.stringify({
+      source: 'zoho',
+      error: errorMsg,
+      ticketId: zohoTicketId,
+      messageId: zohoMessageId,
+      keys: Object.keys(payload).slice(0, 20),
+      preview: previewPayload(payload)
+    }));
+    // Optionally persist failure for retry/debug
+    if (zohoTicketId) {
+      await recordEventFailure({
+        eventKey: `zoho-missing-messageId:${zohoTicketId}:${Date.now()}`,
+        originSystem: 'zoho',
+        eventName: 'Ticket_Thread_Add',
+        errorMessage: errorMsg,
+        payloadJson: payload,
+        retryCount: 0
+      }, env);
+    }
+    return;
+  }
 
   const ticket = await env.BRIDGE_DB.prepare(
     'SELECT id, upmind_ticket_id FROM ticket_map WHERE zoho_ticket_id = ?1 LIMIT 1'
@@ -1108,13 +1150,32 @@ function extractZohoContactId(payload: JsonRecord): string | undefined {
 }
 
 function extractZohoMessageId(payload: JsonRecord): string | undefined {
-  return firstNonEmpty([
+  let id = firstNonEmpty([
     deepReadString(payload, ['data', 'threadId']),
     deepReadString(payload, ['threadId']),
     deepReadString(payload, ['data', 'commentId']),
     deepReadString(payload, ['commentId']),
-    recursiveFindString(payload, ['threadId', 'thread_id', 'commentId', 'comment_id', 'messageId', 'message_id'])
+    recursiveFindString(payload, ['threadId', 'thread_id', 'commentId', 'comment_id', 'messageId', 'message_id', 'id'])
   ]);
+  // If not found, try nested fields (e.g., Ticket_Thread_Add: payload.thread.id, payload.comment.id)
+  if (!id && payload.thread && typeof payload.thread === 'object' && 'id' in payload.thread) {
+    id = readString((payload.thread as any).id);
+  }
+  if (!id && payload.comment && typeof payload.comment === 'object' && 'id' in payload.comment) {
+    id = readString((payload.comment as any).id);
+  }
+  // If still not found, try to look for id in the original raw payload shape
+  if (!id && Array.isArray(payload.value) && payload.value[0] && payload.value[0].payload) {
+    const nested = payload.value[0].payload;
+    id = readString(nested.threadId) || readString(nested.commentId) || readString(nested.messageId) || readString(nested.id);
+    if (!id && nested.thread && typeof nested.thread === 'object') {
+      id = readString(nested.thread.id);
+    }
+    if (!id && nested.comment && typeof nested.comment === 'object') {
+      id = readString(nested.comment.id);
+    }
+  }
+  return id;
 }
 
 function extractZohoEmail(payload: JsonRecord): string | undefined {
