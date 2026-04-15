@@ -425,7 +425,7 @@ async function readPayload(request: Request): Promise<JsonRecord> {
   }
 }
 
-async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<void> {
+export async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<void> {
   const clientId = extractUpmindClientId(payload);
   const email = extractUpmindEmail(payload);
 
@@ -455,7 +455,7 @@ async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Promise<vo
   ).bind(clientId, zohoContactId, email).run();
 }
 
-async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<void> {
+export async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<void> {
   const ticketId = extractUpmindTicketId(payload);
   const clientId = extractUpmindClientId(payload);
   const email = extractUpmindEmail(payload);
