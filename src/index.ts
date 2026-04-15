@@ -331,13 +331,13 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
   console.log(JSON.stringify({
     source: 'zoho',
     eventName,
-      readString(payload.eventName),
-      readString(payload.eventType),
-      readString(payload.event),
-      readString(payload.name),
-      readString(payload.type),
-      readString(payload.action),
-      recursiveFindString(payload, ['eventName', 'eventType', 'event', 'name', 'type', 'action', 'module'])
+    eventKey,
+    ticketId,
+    contactId,
+    messageId,
+    status,
+    keys: Object.keys(payload).slice(0, 20),
+    preview: previewPayload(payload)
   }));
 
   // When syncing to Upmind, stamp [bridge-origin:zoho] in content/metadata
