@@ -1,4 +1,6 @@
 
+import { handleCronSync } from './cron';
+
 import type { Env } from './types';
 
 type JsonRecord = Record<string, unknown>;
@@ -7,6 +9,23 @@ import { checkUpmindWebhookSignature } from './webhooks';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    // --- CRON SYNC ENDPOINT ---
+    if (request.method === 'POST' && url.pathname === '/cron/sync') {
+      const adminToken = env.ADMIN_TOKEN;
+      function isAdmin(req: Request): boolean {
+        if (!adminToken) return false;
+        const header = req.headers.get('x-admin-token') || req.headers.get('authorization');
+        return header === adminToken || header === `Bearer ${adminToken}`;
+      }
+      if (!isAdmin(request)) return json({ ok: false, error: 'Unauthorized' }, 401);
+      try {
+        const result = await handleCronSync(env);
+        return json(result);
+      } catch (err: any) {
+        return json({ ok: false, error: err.message || 'Cron sync error' }, 500);
+      }
+    }
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/health') {

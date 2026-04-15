@@ -1,3 +1,27 @@
+
+## Cron Sync Endpoint
+
+A periodic/manual sync endpoint is available to ensure all Upmind clients and tickets are synced to Zoho Desk, even if webhooks are missed.
+
+### Endpoint
+
+- `POST /cron/sync`
+	- Requires: `x-admin-token` header (set to your `ADMIN_TOKEN`)
+	- Triggers a scan for unsynced/pending contacts and tickets and pushes them to Zoho Desk.
+	- Returns: `{ ok: true, contactsSynced, ticketsSynced }`
+
+### Usage
+
+- Use this endpoint with a scheduler (e.g., Cloudflare Cron Triggers) or trigger manually for backfill/repair.
+- Example curl:
+
+```sh
+curl -X POST https://<your-worker>/cron/sync -H "x-admin-token: <ADMIN_TOKEN>"
+```
+
+### Purpose
+
+This endpoint ensures robust sync between Upmind and Zoho Desk, even if webhook events are missed or delayed.
 # help-desk
 
 ## Overview
