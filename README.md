@@ -1,16 +1,49 @@
 
-## Cron Sync Endpoint
+## Zoho OAuth Token Management
+
+This project now uses automatic Zoho OAuth token refresh. **Do not use a static ZDK_ACCESS_TOKEN.**
+
+### Required Cloudflare Secrets
+
+- `ZOHO_CLIENT_ID`
+- `ZOHO_CLIENT_SECRET`
+- `ZOHO_REFRESH_TOKEN`
+- `ZOHO_ACCOUNTS_URL` (e.g. `https://accounts.zoho.com`)
+
+### D1 Database Migration
+
+Run the migration in `migrations/0002_oauth_tokens.sql` to create the `oauth_tokens` table:
+
+```
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	provider TEXT NOT NULL,
+	access_token TEXT NOT NULL,
+	expires_at INTEGER NOT NULL,
+	updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_tokens_provider ON oauth_tokens(provider);
+```
+
+### How It Works
+
+- All Zoho API calls use a helper `getZohoAccessToken(env)`.
+- The helper reads the cached token from D1 and returns it if valid for at least 5 more minutes.
+- If expired, it refreshes the token from Zoho using the refresh token and updates D1.
+- **No secrets or tokens are ever logged.**
+
+### Cron Sync Endpoint
 
 A periodic/manual sync endpoint is available to ensure all Upmind clients and tickets are synced to Zoho Desk, even if webhooks are missed.
 
-### Endpoint
+#### Endpoint
 
 - `POST /cron/sync`
 	- Requires: `x-admin-token` header (set to your `ADMIN_TOKEN`)
 	- Triggers a scan for unsynced/pending contacts and tickets and pushes them to Zoho Desk.
 	- Returns: `{ ok: true, contactsSynced, ticketsSynced }`
 
-### Usage
+#### Usage
 
 - Use this endpoint with a scheduler (e.g., Cloudflare Cron Triggers) or trigger manually for backfill/repair.
 - Example curl:
@@ -19,7 +52,7 @@ A periodic/manual sync endpoint is available to ensure all Upmind clients and ti
 curl -X POST https://<your-worker>/cron/sync -H "x-admin-token: <ADMIN_TOKEN>"
 ```
 
-### Purpose
+#### Purpose
 
 This endpoint ensures robust sync between Upmind and Zoho Desk, even if webhook events are missed or delayed.
 # help-desk

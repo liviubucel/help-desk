@@ -2,6 +2,7 @@
 import { handleCronSync } from './cron';
 
 import type { Env } from './types';
+import { getZohoAccessToken } from './zoho-oauth';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -26,7 +27,6 @@ export default {
         return json({ ok: false, error: err.message || 'Cron sync error' }, 500);
       }
     }
-    const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({
@@ -798,11 +798,12 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
     throw new Error(`Missing Zoho config: ${missing.join(', ')}`);
   }
 
+  const accessToken = await getZohoAccessToken(env);
   const baseUrl = (env.ZDK_BASE_URL ?? 'https://desk.zoho.com/api/v1').replace(/\/$/, '');
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
-      'authorization': `Zoho-oauthtoken ${env.ZDK_ACCESS_TOKEN}`,
+      'authorization': `Zoho-oauthtoken ${accessToken}`,
       'orgId': String(env.ZDK_ORG_ID),
       'content-type': 'application/json'
     },
@@ -831,12 +832,14 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
 }
 
 function hasZohoConfig(env: Env): boolean {
-  return Boolean(env.ZDK_ACCESS_TOKEN && env.ZDK_ORG_ID && env.ZDK_DEPARTMENT_ID);
+  return Boolean(env.ZOHO_CLIENT_ID && env.ZOHO_CLIENT_SECRET && env.ZOHO_REFRESH_TOKEN && env.ZDK_ORG_ID && env.ZDK_DEPARTMENT_ID);
 }
 
 function missingZohoConfig(env: Env): string[] {
   const missing: string[] = [];
-  if (!env.ZDK_ACCESS_TOKEN) missing.push('ZDK_ACCESS_TOKEN');
+  if (!env.ZOHO_CLIENT_ID) missing.push('ZOHO_CLIENT_ID');
+  if (!env.ZOHO_CLIENT_SECRET) missing.push('ZOHO_CLIENT_SECRET');
+  if (!env.ZOHO_REFRESH_TOKEN) missing.push('ZOHO_REFRESH_TOKEN');
   if (!env.ZDK_ORG_ID) missing.push('ZDK_ORG_ID');
   if (!env.ZDK_DEPARTMENT_ID) missing.push('ZDK_DEPARTMENT_ID');
   return missing;
@@ -860,7 +863,9 @@ function configStatus(env: Env): JsonRecord {
     upmindWebhookSecret: Boolean(env.UPMIND_WEBHOOK_SECRET),
     upmindMissing: missingUpmindConfig(env),
     zohoBaseUrl: Boolean(env.ZDK_BASE_URL),
-    zohoAccessToken: Boolean(env.ZDK_ACCESS_TOKEN),
+    zohoClientId: Boolean(env.ZOHO_CLIENT_ID),
+    zohoClientSecret: Boolean(env.ZOHO_CLIENT_SECRET),
+    zohoRefreshToken: Boolean(env.ZOHO_REFRESH_TOKEN),
     zohoOrgId: Boolean(env.ZDK_ORG_ID),
     zohoDepartmentId: Boolean(env.ZDK_DEPARTMENT_ID),
     zohoMissing: missingZohoConfig(env)

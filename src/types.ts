@@ -11,7 +11,11 @@ export interface Env {
 	ZDK_BASE_URL?: string;
 	ZDK_ORG_ID?: string;
 	ZDK_DEPARTMENT_ID?: string;
-	ZDK_ACCESS_TOKEN?: string;
+	// ZOHO OAuth2 secrets (do not log)
+	ZOHO_CLIENT_ID?: string;
+	ZOHO_CLIENT_SECRET?: string;
+	ZOHO_REFRESH_TOKEN?: string;
+	ZOHO_ACCOUNTS_URL?: string;
 	ZDK_WEBHOOK_AUDIENCE?: string;
 	ZDK_WEBHOOK_ISSUER?: string;
 	ZDK_IGNORE_SOURCE_ID?: string;
