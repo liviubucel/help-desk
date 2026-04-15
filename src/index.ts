@@ -1,18 +1,9 @@
-export interface Env {
-  BRIDGE_DB: D1Database;
-  UPMIND_API_BASE_URL?: string;
-  UPMIND_API_TOKEN?: string;
-  UPMIND_WEBHOOK_SECRET?: string;
-  ZDK_BASE_URL?: string;
-  ZDK_ORG_ID?: string;
-  ZDK_DEPARTMENT_ID?: string;
-  ZDK_ACCESS_TOKEN?: string;
-  ZDK_WEBHOOK_AUDIENCE?: string;
-  ZDK_WEBHOOK_ISSUER?: string;
-  ZDK_IGNORE_SOURCE_ID?: string;
-}
+
+import type { Env } from './types';
 
 type JsonRecord = Record<string, unknown>;
+
+import { checkUpmindWebhookSignature } from './webhooks';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -36,6 +27,11 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/webhooks/upmind') {
+      // Verify Upmind webhook signature
+      const valid = await checkUpmindWebhookSignature(request.clone(), env);
+      if (!valid) {
+        return json({ ok: false, error: 'Invalid Upmind webhook signature' }, 401);
+      }
       return handleUpmindWebhook(request, env);
     }
 
@@ -43,9 +39,70 @@ export default {
       return handleZohoWebhook(request, env);
     }
 
+    // --- AUTH ENDPOINTS ---
+
+    if (request.method === 'GET' && url.pathname === '/auth/upmind-client-context') {
+      const { resolveAuthenticatedUpmindClient } = await import('./auth');
+      const client = await resolveAuthenticatedUpmindClient(request, env);
+      if (client) return json({ authenticated: true, ...client });
+      else return json({ authenticated: false });
+    }
+
+
+    if (request.method === 'GET' && url.pathname === '/auth/asap-jwt') {
+      const { resolveAuthenticatedUpmindClient, generateZohoAsapJwt } = await import('./auth');
+      const client = await resolveAuthenticatedUpmindClient(request, env);
+      if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
+      try {
+        const token = await generateZohoAsapJwt(client, env);
+        return json({ token });
+      } catch (err: any) {
+        return json({ ok: false, error: err.message || 'JWT error' }, 400);
+      }
+    }
+
+
+    if (request.method === 'GET' && url.pathname === '/auth/helpcenter-jwt') {
+      const { resolveAuthenticatedUpmindClient, generateZohoHelpCenterJwt } = await import('./auth');
+      const client = await resolveAuthenticatedUpmindClient(request, env);
+      if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
+      try {
+        const token = await generateZohoHelpCenterJwt(client, env);
+        return json({ token });
+      } catch (err: any) {
+        return json({ ok: false, error: err.message || 'JWT error' }, 400);
+      }
+    }
+
+    if (request.method === 'GET' && url.pathname === '/auth/helpcenter-launch') {
+      const { resolveAuthenticatedUpmindClient, generateZohoHelpCenterJwt } = await import('./auth');
+      const client = await resolveAuthenticatedUpmindClient(request, env);
+      if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
+      try {
+        const token = await generateZohoHelpCenterJwt(client, env);
+        const launchUrl = env.ZOHO_HELP_CENTER_URL ? `${env.ZOHO_HELP_CENTER_URL}?jwt=${encodeURIComponent(token)}` : undefined;
+        return json({ token, launchUrl, email: client.email });
+      } catch (err: any) {
+        return json({ ok: false, error: err.message || 'JWT error' }, 400);
+      }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/auth/logout') {
+      // TODO: implement logout logic (clear session/cookie if used)
+      return json({ ok: true, loggedOut: true });
+    }
+
     return json({ ok: false, error: 'Not found' }, 404);
   }
 };
+
+// Helper to append bridge-origin marker to content if not present
+function appendOriginMarker(content: any, marker: string): any {
+  if (typeof content === 'string') {
+    return content.includes(marker) ? content : `${content}\n${marker}`;
+  }
+  return content;
+}
 
 async function handleUpmindWebhook(request: Request, env: Env): Promise<Response> {
   await ensureSchema(env);
@@ -58,6 +115,12 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     recursiveFindString(payload, ['event', 'eventName', 'eventType', 'name', 'type', 'action'])
   ])) ?? 'upmind.unknown';
   const eventKey = await computeEventKey('upmind', request, payload);
+
+  // Loop prevention: ignore events with bridge-origin:zoho marker
+  const originMarker = '[bridge-origin:zoho]';
+  if (JSON.stringify(payload).includes(originMarker)) {
+    return json({ ok: true, ignored: true, reason: 'loop-prevention', eventKey });
+  }
 
   if (await isDuplicate(env, eventKey)) {
     return json({ ok: true, duplicate: true, eventKey });
@@ -81,36 +144,37 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     preview: previewPayload(payload)
   }));
 
+  // When syncing to Zoho, stamp [bridge-origin:upmind] in content/metadata
   switch (eventName) {
     case 'Client created':
     case 'Client updated':
     case 'Client_Create':
     case 'Client_Update':
-      await syncUpmindClientToZoho(payload, env);
+      await syncUpmindClientToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       break;
     case 'Client opened new ticket':
     case 'Staff opened new ticket':
     case 'Ticket_Add':
-      await syncUpmindTicketToZoho(payload, env);
+      await syncUpmindTicketToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
       break;
     case 'Client posted ticket message':
     case 'Staff replied to ticket':
     case 'Ticket client replied':
-      await syncUpmindMessageToZoho(payload, env);
+      await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
       break;
     case 'Ticket closed':
     case 'Ticket reopened':
     case 'Ticket waiting response':
     case 'Ticket in progress':
-      await syncUpmindStatusToZoho(payload, env);
+      await syncUpmindStatusToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       break;
     default:
       if (ticketId && messageId) {
-        await syncUpmindMessageToZoho(payload, env);
+        await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
       } else if (ticketId) {
-        await syncUpmindTicketToZoho(payload, env);
+        await syncUpmindTicketToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
       } else if (clientId) {
-        await syncUpmindClientToZoho(payload, env);
+        await syncUpmindClientToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       }
       break;
   }
@@ -131,6 +195,12 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
     recursiveFindString(payload, ['eventName', 'eventType', 'event', 'name', 'type', 'action', 'module'])
   ])) ?? 'zoho.unknown';
   const eventKey = await computeEventKey('zoho', request, payload);
+
+  // Loop prevention: ignore events with bridge-origin:upmind marker
+  const originMarker = '[bridge-origin:upmind]';
+  if (JSON.stringify(payload).includes(originMarker)) {
+    return json({ ok: true, ignored: true, reason: 'loop-prevention', eventKey });
+  }
 
   if (await isDuplicate(env, eventKey)) {
     return json({ ok: true, duplicate: true, eventKey });
@@ -156,35 +226,43 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
     preview: previewPayload(payload)
   }));
 
+  // When syncing to Upmind, stamp [bridge-origin:zoho] in content/metadata
   switch (eventName) {
     case 'Contact_Add':
     case 'Contact_Update':
-      await syncZohoContactToUpmind(payload, env);
+      await syncZohoContactToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       break;
     case 'Ticket_Add':
-      await syncZohoTicketToUpmind(payload, env);
+      await syncZohoTicketToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
       break;
     case 'Ticket_Comment_Add':
     case 'Ticket_Thread_Add':
-      await syncZohoReplyToUpmind(payload, env);
+      await syncZohoReplyToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
       break;
     case 'Ticket_Update':
-      await syncZohoStatusToUpmind(payload, env);
+      await syncZohoStatusToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       break;
     default:
       if (ticketId && messageId) {
-        await syncZohoReplyToUpmind(payload, env);
+        await syncZohoReplyToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
       } else if (ticketId && status) {
-        await syncZohoStatusToUpmind(payload, env);
+        await syncZohoStatusToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       } else if (ticketId) {
-        await syncZohoTicketToUpmind(payload, env);
+        await syncZohoTicketToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
       } else if (contactId) {
-        await syncZohoContactToUpmind(payload, env);
+        await syncZohoContactToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       }
       break;
   }
 
   return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status });
+// Helper to append bridge-origin marker to content if not present
+function appendOriginMarker(content: any, marker: string): any {
+  if (typeof content === 'string') {
+    return content.includes(marker) ? content : `${content}\n${marker}`;
+  }
+  return content;
+}
 }
 
 async function ensureSchema(env: Env): Promise<void> {
