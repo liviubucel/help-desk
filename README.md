@@ -1,3 +1,45 @@
+# help-desk
+
+## Overview
+Production-ready bridge between Upmind and Zoho Desk, running on Cloudflare Workers with D1Database. Synchronizes tickets, contacts, and messages between the two systems, provides secure authentication, și expune endpointuri admin/debug/backfill.
+
+## Key Implementation Details
+- **Events are marked processed only after successful sync.**
+- **Failed events are tracked in the `event_failures` table** (see `migrations/0003_event_failures.sql`).
+- **Contact hydration fallback:** If contact info is missing, the worker fetches it from Upmind API before syncing to Zoho.
+- **Extractors support both legacy and cron/backfill key shapes** (e.g., `upmind_client_id`, `upmind_ticket_id`).
+- **Loop prevention** is enforced using `[bridge-origin:upmind]` and `[bridge-origin:zoho]` markers.
+- **Admin endpoints**: `/admin/health`, `/admin/db-status`, `/admin/failures`, `/debug/raw-event/{eventKey}`, `/backfill/reprocess/{eventKey}`.
+- **Structured logging** for all major sync steps and errors (never logs secrets/tokens).
+
+## Endpoints
+- `/webhooks/upmind` — Upmind → Zoho sync
+- `/webhooks/zoho` — Zoho → Upmind sync
+- `/admin/health` — Service health and config status
+- `/admin/db-status` — Row counts for all tables
+- `/admin/failures` — Inspect failed events
+- `/debug/raw-event/{eventKey}` — Fetch raw event payload by eventKey
+- `/backfill/reprocess/{eventKey}` — Reprocess a raw event (dangerous)
+
+## Environment Variables (Env)
+- `BRIDGE_DB` — D1Database binding
+- `UPMIND_API_BASE_URL`, `UPMIND_API_TOKEN`, `UPMIND_WEBHOOK_SECRET`, `UPMIND_CONTEXT_SHARED_SECRET`, `ALLOW_DEV_AUTH_CONTEXT`, `ALLOW_INSECURE_WEBHOOKS`, `UPMIND_WEBHOOK_SIGNATURE_HEADER`
+- `ZDK_BASE_URL`, `ZDK_ORG_ID`, `ZDK_DEPARTMENT_ID`, `ZDK_ACCESS_TOKEN`, `ZDK_WEBHOOK_SECRET`
+- `ZOHO_HELP_CENTER_URL`, `ZOHO_HC_JWT_SECRET`, `ZOHO_ASAP_JWT_SECRET`, `ZOHO_ASAP_JWT_TTL_MS`
+- `ADMIN_TOKEN` — Secret for admin/debug/backfill endpoints
+
+## Migration Steps
+1. Apply all migrations in `migrations/` (including `0003_event_failures.sql`).
+2. Deploy updated worker code.
+3. Ensure all required environment variables are set.
+
+## Remaining Assumptions/TODOs
+- Some edge cases for Upmind/Zoho API responses may require further fallback logic.
+- Retry logic for failed events can be further improved.
+- Ensure D1Database is not near quota/limits for production scale.
+
+## License
+MIT
 ## Automatizare sincronizare cu Cloudflare Cron Trigger
 
 Sincronizarea se poate face automat folosind Workers Scheduled Triggers (cron) din Cloudflare:

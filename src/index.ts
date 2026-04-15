@@ -225,11 +225,11 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
   await markProcessed(env, eventKey, 'upmind');
   await storeRawEvent(env, 'upmind', eventName, eventKey, payload);
 
-
-  // Patch: extrage ticketId și messageId și din object/object_id dacă lipsesc
-  let ticketId = extractUpmindTicketId(payload);
-  let messageId = extractUpmindMessageId(payload);
-  let clientId = extractUpmindClientId(payload);
+      readString(payload.event),
+      readString(payload.name),
+      readString(payload.type),
+      readString(payload.action),
+      recursiveFindString(payload, ['event', 'eventName', 'eventType', 'name', 'type', 'action'])
 
   // Dacă avem un webhook de tip ticket_message, încearcă să extragi din object/object_id
   if (!ticketId && payload.object && typeof payload.object === 'object') {
@@ -331,13 +331,13 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
   console.log(JSON.stringify({
     source: 'zoho',
     eventName,
-    eventKey,
-    ticketId,
-    contactId,
-    messageId,
-    status,
-    keys: Object.keys(payload).slice(0, 20),
-    preview: previewPayload(payload)
+      readString(payload.eventName),
+      readString(payload.eventType),
+      readString(payload.event),
+      readString(payload.name),
+      readString(payload.type),
+      readString(payload.action),
+      recursiveFindString(payload, ['eventName', 'eventType', 'event', 'name', 'type', 'action', 'module'])
   }));
 
   // When syncing to Upmind, stamp [bridge-origin:zoho] in content/metadata
