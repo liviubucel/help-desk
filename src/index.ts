@@ -492,9 +492,9 @@ export async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Pro
 }
 
 export async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<void> {
-  const ticketId = extractUpmindTicketId(payload);
-  const clientId = extractUpmindClientId(payload);
-  const email = extractUpmindEmail(payload);
+  let ticketId = extractUpmindTicketId(payload);
+  let clientId = extractUpmindClientId(payload);
+  let email = extractUpmindEmail(payload);
   const subject = extractUpmindSubject(payload) ?? `Upmind ticket ${ticketId ?? 'unknown'}`;
   const description = extractUpmindDescription(payload) ?? 'Imported from Upmind webhook';
   const status = mapUpmindStatusToZoho(extractUpmindStatus(payload));
@@ -507,10 +507,17 @@ export async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Pro
 
   let zohoTicketId = existing?.zoho_ticket_id;
   if ((!zohoTicketId || zohoTicketId.startsWith('pending-')) && hasZohoConfig(env)) {
-    if (email) {
-      await syncUpmindClientToZoho(payload, env);
+    // If email is missing, try to fetch client details from Upmind API
+    if ((!email || !clientId) && clientId) {
+      const client = await fetchUpmindClientById(env, clientId);
+      if (client && client.email) {
+        email = client.email;
+      }
     }
-
+    if (email) {
+      await syncUpmindClientToZoho({ ...payload, email }, env);
+    }
+    // Re-read mapping after possible client sync
     const zohoContactId = (clientId || email)
       ? (await env.BRIDGE_DB.prepare(
         'SELECT zoho_contact_id FROM contact_map WHERE upmind_client_id = ?1 OR email = ?2 LIMIT 1'
@@ -1284,4 +1291,15 @@ function json(data: unknown, status = 200): Response {
       'content-type': 'application/json; charset=utf-8'
     }
   });
+}
+
+// Helper to fetch Upmind client details by clientId
+export async function fetchUpmindClientById(env: Env, clientId: string): Promise<any> {
+  if (!env.UPMIND_API_BASE_URL || !env.UPMIND_API_TOKEN) return null;
+  const url = `${env.UPMIND_API_BASE_URL}/clients/${clientId}`;
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${env.UPMIND_API_TOKEN}` }
+  });
+  if (!res.ok) return null;
+  return await res.json();
 }

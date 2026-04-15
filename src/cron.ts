@@ -20,7 +20,13 @@ export async function handleCronSync(env: Env): Promise<object> {
 
   let ticketsSynced = 0;
   for (const row of pendingTickets.results) {
-    await syncUpmindTicketToZoho({ upmind_ticket_id: row.upmind_ticket_id, upmind_client_id: row.upmind_client_id }, env);
+    // Ensure payload keys are compatible for extractors
+    await syncUpmindTicketToZoho({
+      upmind_ticket_id: row.upmind_ticket_id,
+      upmind_client_id: row.upmind_client_id,
+      ticket_id: row.upmind_ticket_id, // for legacy extractor compatibility
+      client_id: row.upmind_client_id  // for legacy extractor compatibility
+    }, env);
     ticketsSynced++;
   }
 
