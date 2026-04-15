@@ -227,9 +227,22 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
   await markProcessed(env, eventKey, 'upmind');
   await storeRawEvent(env, 'upmind', eventName, eventKey, payload);
 
-  const ticketId = extractUpmindTicketId(payload);
-  const messageId = extractUpmindMessageId(payload);
-  const clientId = extractUpmindClientId(payload);
+
+  // Patch: extrage ticketId și messageId și din object/object_id dacă lipsesc
+  let ticketId = extractUpmindTicketId(payload);
+  let messageId = extractUpmindMessageId(payload);
+  let clientId = extractUpmindClientId(payload);
+
+  // Dacă avem un webhook de tip ticket_message, încearcă să extragi din object/object_id
+  if (!ticketId && payload.object && typeof payload.object === 'object') {
+    ticketId = (payload.object as any).ticket_id || (payload.object as any).ticketId || ticketId;
+  }
+  if (!messageId && payload.object_id && payload.object_type === 'ticket_message') {
+    messageId = String(payload.object_id);
+  }
+  if (!clientId && payload.object && typeof payload.object === 'object') {
+    clientId = (payload.object as any).client_id || (payload.object as any).clientId || clientId;
+  }
 
   console.log(JSON.stringify({
     source: 'upmind',
@@ -244,6 +257,11 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
 
   // When syncing to Zoho, stamp [bridge-origin:upmind] in content/metadata
   switch (eventName) {
+        // Patch: tratează explicit user_posted_ticket_message_hook
+        case 'user_posted_ticket_message_hook':
+        case 'Ticket Message':
+          await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind' }, env);
+          break;
     case 'Client created':
     case 'Client updated':
     case 'Client_Create':
