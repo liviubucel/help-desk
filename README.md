@@ -14,19 +14,25 @@ Production-ready bridge between Upmind and Zoho Desk, running on Cloudflare Work
 
 ## Endpoints
 - `/webhooks/upmind` — Upmind → Zoho sync
-- `/webhooks/zoho` — Zoho → Upmind sync
+- `/webhooks/zoho` — Zoho → Upmind sync (accepts either `x-zoho-webhook-secret` or `x-zdesk-jwt` header for authentication)
 - `/admin/health` — Service health and config status
 - `/admin/db-status` — Row counts for all tables
 - `/admin/failures` — Inspect failed events
 - `/debug/raw-event/{eventKey}` — Fetch raw event payload by eventKey
 - `/backfill/reprocess/{eventKey}` — Reprocess a raw event (dangerous)
 
-## Environment Variables (Env)
 - `BRIDGE_DB` — D1Database binding
 - `UPMIND_API_BASE_URL`, `UPMIND_API_TOKEN`, `UPMIND_WEBHOOK_SECRET`, `UPMIND_CONTEXT_SHARED_SECRET`, `ALLOW_DEV_AUTH_CONTEXT`, `ALLOW_INSECURE_WEBHOOKS`, `UPMIND_WEBHOOK_SIGNATURE_HEADER`
 - `ZDK_BASE_URL`, `ZDK_ORG_ID`, `ZDK_DEPARTMENT_ID`, `ZDK_ACCESS_TOKEN`, `ZDK_WEBHOOK_SECRET`
 - `ZOHO_HELP_CENTER_URL`, `ZOHO_HC_JWT_SECRET`, `ZOHO_ASAP_JWT_SECRET`, `ZOHO_ASAP_JWT_TTL_MS`
 - `ADMIN_TOKEN` — Secret for admin/debug/backfill endpoints
+
+## Zoho Webhook Authentication
+The `/webhooks/zoho` endpoint accepts either of the following headers for authentication:
+- `x-zoho-webhook-secret` (configurable shared secret)
+- `x-zdesk-jwt` (used by real Zoho Desk webhooks)
+Either header must match the value of `ZDK_WEBHOOK_SECRET` in your environment variables.
+If neither header is present or valid, the request will be rejected with 401.
 
 ## Migration Steps
 1. Apply all migrations in `migrations/` (including `0003_event_failures.sql`).

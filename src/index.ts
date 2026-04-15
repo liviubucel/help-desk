@@ -72,11 +72,12 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/webhooks/zoho') {
-      // Require ZDK_WEBHOOK_SECRET header for Zoho webhook
+      // Accept either x-zoho-webhook-secret or x-zdesk-jwt for Zoho webhook authentication
       const zohoSecret = env.ZDK_WEBHOOK_SECRET;
-      const header = request.headers.get('x-zoho-webhook-secret');
-      if (!zohoSecret || !header || header !== zohoSecret) {
-        return json({ ok: false, error: 'Missing or invalid Zoho webhook secret' }, 401);
+      const header1 = request.headers.get('x-zoho-webhook-secret');
+      const header2 = request.headers.get('x-zdesk-jwt');
+      if (!zohoSecret || (!header1 && !header2) || (header1 && header1 !== zohoSecret) || (header2 && header2 !== zohoSecret)) {
+        return json({ ok: false, error: 'Missing or invalid Zoho webhook secret (x-zoho-webhook-secret or x-zdesk-jwt)' }, 401);
       }
       return handleZohoWebhook(request, env);
     }
