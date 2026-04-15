@@ -1,4 +1,4 @@
-import { hmacSha256Hex } from './utils/crypto';
+import { hmacSha256Hex, timingSafeEqual } from './utils/crypto';
 // Helper to base64url encode a string or buffer
 function base64url(input: string | Uint8Array): string {
 	let str = typeof input === 'string' ? btoa(input) : btoa(String.fromCharCode(...input));
