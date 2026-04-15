@@ -36,6 +36,12 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/webhooks/zoho') {
+      // Require ZDK_WEBHOOK_SECRET header for Zoho webhook
+      const zohoSecret = env.ZDK_WEBHOOK_SECRET;
+      const header = request.headers.get('x-zoho-webhook-secret');
+      if (!zohoSecret || !header || header !== zohoSecret) {
+        return json({ ok: false, error: 'Missing or invalid Zoho webhook secret' }, 401);
+      }
       return handleZohoWebhook(request, env);
     }
 
@@ -93,11 +99,11 @@ export default {
     }
 
     // --- ADMIN/DEBUG/BACKFILL ENDPOINTS ---
-    // Simple admin token protection (can be improved with RBAC/JWT)
-    const adminToken = env.ADMIN_TOKEN || env.ZOHO_HC_JWT_SECRET || env.ZOHO_ASAP_JWT_SECRET;
+    // Admin token protection (dedicated token only)
+    const adminToken = env.ADMIN_TOKEN;
     function isAdmin(req: Request): boolean {
+      if (!adminToken) return false;
       const header = req.headers.get('x-admin-token') || req.headers.get('authorization');
-      if (!header || !adminToken) return false;
       return header === adminToken || header === `Bearer ${adminToken}`;
     }
 
@@ -1003,13 +1009,17 @@ function extractUpmindStatus(payload: JsonRecord): string | undefined {
   ]);
 }
 
+// Prefer explicit ticketId fields over generic id fields
 function extractZohoTicketId(payload: JsonRecord): string | undefined {
   return firstNonEmpty([
-    deepReadString(payload, ['data', 'id']),
-    deepReadString(payload, ['id']),
     deepReadString(payload, ['data', 'ticketId']),
     deepReadString(payload, ['ticketId']),
-    recursiveFindString(payload, ['ticketId', 'ticket_id'])
+    deepReadString(payload, ['data', 'ticket', 'id']),
+    deepReadString(payload, ['ticket', 'id']),
+    recursiveFindString(payload, ['ticketId', 'ticket_id']),
+    // Only use data.id or id if there is strong evidence this is a ticket event
+    (payload['eventName']?.toString().toLowerCase().includes('ticket') ? deepReadString(payload, ['data', 'id']) : undefined),
+    (payload['eventName']?.toString().toLowerCase().includes('ticket') ? deepReadString(payload, ['id']) : undefined)
   ]);
 }
 

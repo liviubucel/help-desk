@@ -48,7 +48,7 @@ export async function generateZohoHelpCenterJwt(client: AuthenticatedClient, env
 	return signJwtHS256(payload, secret);
 }
 
-import type { Env } from './index';
+import type { Env } from './types';
 
 export interface AuthenticatedClient {
 	clientId: string;
@@ -60,29 +60,35 @@ export interface AuthenticatedClient {
  * Pluggable resolver for authenticated Upmind client context
  */
 export async function resolveAuthenticatedUpmindClient(request: Request, env: Env): Promise<AuthenticatedClient | null> {
-	// Strategy A: Signed upstream header mode
-	const clientId = request.headers.get('X-Upmind-Client-Id');
-	const email = request.headers.get('X-Upmind-Client-Email');
-	const name = request.headers.get('X-Upmind-Client-Name');
-	const signature = request.headers.get('X-Upmind-Auth-Signature');
-	const sharedSecret = env.UPMIND_CONTEXT_SHARED_SECRET;
-	if (clientId && email && signature && sharedSecret) {
-		// TODO: verify signature using sharedSecret
-		// For now, accept if present
-		return { clientId, email, name: name || undefined };
-	}
+  // Strategy A: Signed upstream header mode (reverse proxy injects headers)
+  const clientId = request.headers.get('X-Upmind-Client-Id');
+  const email = request.headers.get('X-Upmind-Client-Email');
+  const name = request.headers.get('X-Upmind-Client-Name');
+  const signature = request.headers.get('X-Upmind-Auth-Signature');
+  const sharedSecret = env.UPMIND_CONTEXT_SHARED_SECRET;
+  if (clientId && email && signature && sharedSecret) {
+    // Canonical string: `${clientId}:${email}:${name ?? ''}`
+    const canonical = `${clientId}:${email}:${name ?? ''}`;
+    const expected = await hmacSha256Hex(sharedSecret, canonical);
+    const sigBuf = new Uint8Array(signature.match(/.{1,2}/g)?.map(b => parseInt(b, 16)) ?? []);
+    const expBuf = new Uint8Array(expected.match(/.{1,2}/g)?.map(b => parseInt(b, 16)) ?? []);
+    if (sigBuf.length && expBuf.length && timingSafeEqual(sigBuf, expBuf)) {
+      return { clientId, email, name: name || undefined };
+    }
+    return null;
+  }
 
-	// Strategy B: Dev mode query param
-	if (env.ALLOW_DEV_AUTH_CONTEXT === 'true') {
-		const url = new URL(request.url);
-		const devClientId = url.searchParams.get('client_id');
-		const devEmail = url.searchParams.get('email');
-		const devName = url.searchParams.get('name');
-		if (devClientId && devEmail) {
-			return { clientId: devClientId, email: devEmail, name: devName || undefined };
-		}
-	}
+  // Strategy B: Dev mode query param (explicit dev fallback)
+  if (env.ALLOW_DEV_AUTH_CONTEXT === 'true') {
+    const url = new URL(request.url);
+    const devClientId = url.searchParams.get('client_id');
+    const devEmail = url.searchParams.get('email');
+    const devName = url.searchParams.get('name');
+    if (devClientId && devEmail) {
+      return { clientId: devClientId, email: devEmail, name: devName || undefined };
+    }
+  }
 
-	// Strategy C: Stub fallback
-	return null;
+  // Strategy C: Stub fallback
+  return null;
 }

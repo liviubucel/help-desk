@@ -4,11 +4,12 @@
 This project is a production-ready bridge between Upmind and Zoho Desk, running on Cloudflare Workers with D1Database. It synchronizes tickets, contacts, and messages between the two systems, provides secure authentication, and exposes admin/debug/backfill endpoints.
 
 ## Features
-- Webhook signature verification (timing-safe, HMAC SHA256)
+- Upmind webhook signature verification (timing-safe, HMAC SHA256)
+- Zoho webhook protection (shared secret header)
 - Idempotency and loop prevention (bridge-origin marker)
 - Robust ticket/contact/message sync (bi-directional)
 - JWT authentication for Zoho ASAP and Help Center
-- Pluggable session resolver for Upmind
+- Pluggable session resolver for Upmind (with HMAC signature verification)
 - Admin, debug, and backfill endpoints (protected)
 - Modular, type-safe TypeScript codebase
 - SQL migrations for schema evolution
@@ -16,13 +17,13 @@ This project is a production-ready bridge between Upmind and Zoho Desk, running 
 ## Endpoints
 
 ### Webhooks
-- `POST /webhooks/upmind` — Receives Upmind webhooks, verifies signature, syncs to Zoho
-- `POST /webhooks/zoho` — Receives Zoho webhooks, syncs to Upmind
+- `POST /webhooks/upmind` — Receives Upmind webhooks, verifies HMAC signature, syncs to Zoho
+- `POST /webhooks/zoho` — Receives Zoho webhooks, requires `x-zoho-webhook-secret` header, syncs to Upmind
 - `GET|HEAD /webhooks/upmind` — Validation endpoint
 - `GET|HEAD /webhooks/zoho` — Validation endpoint
 
 ### Auth
-- `GET /auth/upmind-client-context` — Returns Upmind client context (if authenticated)
+- `GET /auth/upmind-client-context` — Returns Upmind client context (if authenticated, HMAC header signature required in prod)
 - `GET /auth/asap-jwt` — Issues JWT for Zoho ASAP (requires Upmind session)
 - `GET /auth/helpcenter-jwt` — Issues JWT for Zoho Help Center (requires Upmind session)
 - `GET /auth/helpcenter-launch` — Returns JWT and launch URL for Zoho Help Center
@@ -36,20 +37,23 @@ This project is a production-ready bridge between Upmind and Zoho Desk, running 
 
 ## Environment Variables (Env)
 - `BRIDGE_DB` — D1Database binding
-- `UPMIND_API_BASE_URL`, `UPMIND_API_TOKEN`, `UPMIND_WEBHOOK_SECRET`
-- `ZDK_BASE_URL`, `ZDK_ORG_ID`, `ZDK_DEPARTMENT_ID`, `ZDK_ACCESS_TOKEN`
-- `ZOHO_HELP_CENTER_URL`, `ZOHO_HC_JWT_SECRET`, `ZOHO_ASAP_JWT_SECRET`
+- `UPMIND_API_BASE_URL`, `UPMIND_API_TOKEN`, `UPMIND_WEBHOOK_SECRET`, `UPMIND_CONTEXT_SHARED_SECRET`, `ALLOW_DEV_AUTH_CONTEXT`, `ALLOW_INSECURE_WEBHOOKS`, `UPMIND_WEBHOOK_SIGNATURE_HEADER`
+- `ZDK_BASE_URL`, `ZDK_ORG_ID`, `ZDK_DEPARTMENT_ID`, `ZDK_ACCESS_TOKEN`, `ZDK_WEBHOOK_SECRET`
+- `ZOHO_HELP_CENTER_URL`, `ZOHO_HC_JWT_SECRET`, `ZOHO_ASAP_JWT_SECRET`, `ZOHO_ASAP_JWT_TTL_MS`
 - `ADMIN_TOKEN` — Secret for admin/debug/backfill endpoints
 
 ## Usage
 1. Deploy to Cloudflare Workers with D1Database
-2. Configure all required environment variables
-3. Set Upmind and Zoho webhooks to point to the appropriate endpoints
-4. Use the admin endpoints for health checks and debugging
+2. Configure all required environment variables (see above)
+3. Set Upmind webhooks to `/webhooks/upmind` (HMAC signature required)
+4. Set Zoho webhooks to `/webhooks/zoho` (must include `x-zoho-webhook-secret` header)
+5. Use the admin endpoints for health checks and debugging
 
 ## Security
-- All webhooks are signature-verified
-- Admin/debug/backfill endpoints require `ADMIN_TOKEN` (or JWT secret)
+- Upmind webhooks: HMAC SHA256 signature verification
+- Zoho webhooks: require `x-zoho-webhook-secret` header (shared secret)
+- Upmind client context: HMAC SHA256 header signature (reverse proxy injects headers)
+- Admin/debug/backfill endpoints require `ADMIN_TOKEN` only
 - JWTs are signed with HS256 using Web Crypto API
 
 ## Development
