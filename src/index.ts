@@ -1,3 +1,22 @@
+// Type imports for Cloudflare Workers
+import type { ScheduledEvent, ExecutionContext } from './cloudflare-workers';
+// Scheduled event handler for Cloudflare Cron Triggers
+export const scheduled = {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    try {
+      await handleCronSync(env);
+    } catch (err: unknown) {
+      // Do not log secrets or tokens
+      let msg = 'Scheduled sync error';
+      if (typeof err === 'object' && err && 'message' in err) {
+        msg += ': ' + (err as any).message;
+      } else if (typeof err === 'string') {
+        msg += ': ' + err;
+      }
+      console.error(msg);
+    }
+  }
+};
 
 import { handleCronSync } from './cron';
 

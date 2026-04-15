@@ -1,3 +1,20 @@
+## Automatizare sincronizare cu Cloudflare Cron Trigger
+
+Sincronizarea se poate face automat folosind Workers Scheduled Triggers (cron) din Cloudflare:
+
+1. Adaugă în wrangler.jsonc:
+
+```
+	"triggers": {
+		"crons": ["0 * * * *"]
+	}
+```
+
+Acest exemplu rulează sincronizarea la fiecare oră. Poți schimba expresia cron după nevoie.
+
+2. Worker-ul va apela automat logica de sync la fiecare execuție programată, fără să fie nevoie de apel manual.
+
+Nu este nevoie de token de admin pentru trigger automat.
 
 ## Zoho OAuth Token Management
 
