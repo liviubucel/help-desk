@@ -7,8 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
-    "db:migrate:local": "wrangler d1 migrations apply helpdesk_bridge --local",
-    "db:migrate:remote": "wrangler d1 migrations apply helpdesk_bridge --remote"
+    "db:migrate:local": "wrangler d1 migrations apply help-desk --local",
+    "db:migrate:remote": "wrangler d1 migrations apply help-desk --remote"
   },
   "devDependencies": {
     "typescript": "^5.0.0",
