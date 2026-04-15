@@ -92,6 +92,60 @@ export default {
       return json({ ok: true, loggedOut: true });
     }
 
+    // --- ADMIN/DEBUG/BACKFILL ENDPOINTS ---
+    // Simple admin token protection (can be improved with RBAC/JWT)
+    const adminToken = env.ADMIN_TOKEN || env.ZOHO_HC_JWT_SECRET || env.ZOHO_ASAP_JWT_SECRET;
+    function isAdmin(req: Request): boolean {
+      const header = req.headers.get('x-admin-token') || req.headers.get('authorization');
+      if (!header || !adminToken) return false;
+      return header === adminToken || header === `Bearer ${adminToken}`;
+    }
+
+    // Admin: health, config, DB status
+    if (url.pathname === '/admin/health' && isAdmin(request)) {
+      return json({ ok: true, time: new Date().toISOString(), config: configStatus(env) });
+    }
+    if (url.pathname === '/admin/db-status' && isAdmin(request)) {
+      // Show table row counts (for debug)
+      const tables = ['contact_map', 'ticket_map', 'message_map', 'processed_events', 'raw_events'];
+      const counts: Record<string, number> = {};
+      for (const table of tables) {
+        try {
+          const row = await env.BRIDGE_DB.prepare(`SELECT COUNT(*) as n FROM ${table}`).first<{ n: number }>();
+          counts[table] = row?.n ?? 0;
+        } catch {
+          counts[table] = -1;
+        }
+      }
+      return json({ ok: true, counts });
+    }
+
+    // Debug: fetch raw event by eventKey
+    if (url.pathname.startsWith('/debug/raw-event/') && isAdmin(request)) {
+      const eventKey = url.pathname.replace('/debug/raw-event/', '');
+      const row = await env.BRIDGE_DB.prepare('SELECT * FROM raw_events WHERE event_key = ?1 LIMIT 1').bind(eventKey).first();
+      return json({ ok: true, eventKey, row });
+    }
+
+    // Backfill: reprocess a raw event by eventKey (dangerous, for admin only)
+    if (url.pathname.startsWith('/backfill/reprocess/') && isAdmin(request)) {
+      const eventKey = url.pathname.replace('/backfill/reprocess/', '');
+      const row = await env.BRIDGE_DB.prepare('SELECT * FROM raw_events WHERE event_key = ?1 LIMIT 1').bind(eventKey).first();
+      if (!row) return json({ ok: false, error: 'Event not found' }, 404);
+      try {
+        const payload = JSON.parse(String(row.payload_json));
+        if (row.origin_system === 'upmind') {
+          await handleUpmindWebhook(new Request('https://dummy', { method: 'POST', body: JSON.stringify(payload) }), env);
+        } else if (row.origin_system === 'zoho') {
+          await handleZohoWebhook(new Request('https://dummy', { method: 'POST', body: JSON.stringify(payload) }), env);
+        }
+        return json({ ok: true, reprocessed: true, eventKey });
+      } catch (err: any) {
+        return json({ ok: false, error: err.message || 'Reprocess error' }, 500);
+      }
+    }
+
+    // Fallback 404
     return json({ ok: false, error: 'Not found' }, 404);
   }
 };
