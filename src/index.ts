@@ -398,14 +398,7 @@ function normalizeZohoPayload(raw: any): any {
     return raw.payload;
   }
   return raw;
-}
-
-// Helper to append bridge-origin marker to content if not present
-function appendOriginMarker(content: any, marker: string): any {
-  if (typeof content === 'string') {
-    return content.includes(marker) ? content : `${content}\n${marker}`;
-  }
-  return content;
+// ...existing code...
 }
 
 async function ensureSchema(env: Env): Promise<void> {
