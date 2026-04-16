@@ -466,6 +466,7 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
       break;
     case 'Ticket_Comment_Add':
     case 'Ticket_Thread_Add':
+    case 'AGENT':
       await syncZohoReplyToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
       break;
     case 'Ticket_Update':
@@ -914,6 +915,10 @@ async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<vo
 async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<void> {
   const zohoTicketId = extractZohoTicketId(payload);
   const zohoMessageId = extractZohoMessageId(payload);
+  const sourceType = deepReadString(payload, ['source', 'type']);
+  const commenterType = deepReadString(payload, ['commenter', 'type']);
+
+  if (sourceType === 'SYSTEM' && commenterType !== 'AGENT') return;
 
   if (!zohoTicketId || !zohoMessageId) {
     // Log and persist failure for missing messageId
@@ -940,40 +945,42 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
     return;
   }
 
+  const existingMessage = await env.BRIDGE_DB.prepare(
+    'SELECT id FROM message_map WHERE zoho_message_id = ?1 LIMIT 1'
+  ).bind(zohoMessageId).first<{ id: number }>();
+  if (existingMessage) return;
+
   const ticket = await env.BRIDGE_DB.prepare(
     'SELECT id, upmind_ticket_id FROM ticket_map WHERE zoho_ticket_id = ?1 LIMIT 1'
   ).bind(zohoTicketId).first<{ id: number; upmind_ticket_id?: string }>();
 
-  if (!ticket) return;
+  if (!ticket) throw new Error(`Cannot sync Zoho reply ${zohoMessageId}: missing ticket mapping for Zoho ticket ${zohoTicketId}`);
 
   let upmindMessageId: string | undefined;
   if (ticket.upmind_ticket_id && !ticket.upmind_ticket_id.startsWith('pending-') && hasUpmindConfig(env)) {
-    try {
-      const created = await upmindRequest(env, 'POST', `/tickets/${encodeURIComponent(ticket.upmind_ticket_id)}/messages`, {
-        content: extractZohoDescription(payload) ?? 'Imported from Zoho'
-      });
-      upmindMessageId = readString(created.id)
-        ?? deepReadString(created, ['data', 'id'])
-        ?? deepReadString(created, ['message', 'id']);
-    } catch (error) {
-      console.log(JSON.stringify({
-        source: 'upmind-api',
-        action: 'create-message',
-        ok: false,
-        upmindTicketId: ticket.upmind_ticket_id,
-        zohoMessageId,
-        error: String(error)
-      }));
-    }
+    const content = htmlToText(extractZohoDescription(payload) ?? '');
+    if (!content) throw new Error(`Cannot sync Zoho reply ${zohoMessageId}: empty content`);
+    const created = await upmindRequest(env, 'POST', `/tickets/${encodeURIComponent(ticket.upmind_ticket_id)}/messages`, {
+      body: content,
+      content,
+      is_private: false
+    });
+    upmindMessageId = readString(created.id)
+      ?? deepReadString(created, ['data', 'id'])
+      ?? deepReadString(created, ['message', 'id']);
   } else if (!hasUpmindConfig(env)) {
     console.log(JSON.stringify({ source: 'upmind-api', skipped: true, reason: 'missing-config', missing: missingUpmindConfig(env) }));
+  } else {
+    throw new Error(`Cannot sync Zoho reply ${zohoMessageId}: Upmind ticket is pending or missing`);
   }
+
+  if (!upmindMessageId) throw new Error(`Cannot sync Zoho reply ${zohoMessageId}: Upmind did not return a message id`);
 
   await env.BRIDGE_DB.prepare(
     `INSERT INTO message_map (upmind_message_id, zoho_message_id, ticket_map_id, origin_system)
      VALUES (?1, ?2, ?3, 'zoho')
      ON CONFLICT(zoho_message_id) DO NOTHING`
-  ).bind(upmindMessageId ?? `pending-upmind-message-${zohoMessageId}`, zohoMessageId, ticket.id).run();
+  ).bind(upmindMessageId, zohoMessageId, ticket.id).run();
 }
 
 async function syncZohoStatusToUpmind(payload: JsonRecord, env: Env): Promise<void> {
@@ -1438,6 +1445,23 @@ function previewPayload(payload: JsonRecord): string {
   } catch {
     return '[unserializable]';
   }
+}
+
+function htmlToText(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function recursiveFindString(value: unknown, keys: string[], depth = 0): string | undefined {
