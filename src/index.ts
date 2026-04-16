@@ -3,7 +3,7 @@ import type { ScheduledEvent, ExecutionContext } from './cloudflare-workers';
 // Scheduled event handler for Cloudflare Cron Triggers
 export async function scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
   try {
-    await handleCronSync(env);
+    await runMaintenanceSync(env);
   } catch (err: unknown) {
     // Do not log secrets or tokens
     let msg = 'Scheduled sync error';
@@ -45,7 +45,7 @@ export default {
       }
       if (!isAdmin(request)) return json({ ok: false, error: 'Unauthorized' }, 401);
       try {
-        const result = await handleCronSync(env);
+        const result = await runMaintenanceSync(env);
         return json(result);
       } catch (err: any) {
         return json({ ok: false, error: err.message || 'Cron sync error' }, 500);
@@ -215,6 +215,67 @@ export default {
     return json({ ok: false, error: 'Not found' }, 404);
   }
 };
+
+async function runMaintenanceSync(env: Env): Promise<JsonRecord> {
+  const cronResult = await handleCronSync(env) as JsonRecord;
+  const retryResult = await retryFailedRawEvents(env);
+  return { ...cronResult, ...retryResult };
+}
+
+async function retryFailedRawEvents(env: Env, limit = 10): Promise<JsonRecord> {
+  await ensureSchema(env);
+
+  const rows = await env.BRIDGE_DB.prepare(`
+    SELECT
+      ef.event_key,
+      ef.origin_system,
+      ef.event_name,
+      re.payload_json
+    FROM event_failures ef
+    JOIN raw_events re ON re.event_key = ef.event_key
+    LEFT JOIN processed_events pe ON pe.event_key = ef.event_key
+    WHERE pe.event_key IS NULL
+    ORDER BY ef.id ASC
+    LIMIT ?1
+  `).bind(limit).all<{
+    event_key: string;
+    origin_system: string;
+    event_name: string;
+    payload_json: string;
+  }>();
+
+  let retried = 0;
+  let retrySucceeded = 0;
+
+  for (const row of rows.results ?? []) {
+    retried++;
+    try {
+      const payload = JSON.parse(row.payload_json);
+      if (row.origin_system === 'upmind') {
+        const response = await handleUpmindWebhook(new Request('https://internal/retry', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        }), env);
+        if (response.ok && response.status < 300) retrySucceeded++;
+      } else if (row.origin_system === 'zoho') {
+        const response = await handleZohoWebhook(new Request('https://internal/retry', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        }), env);
+        if (response.ok && response.status < 300) retrySucceeded++;
+      }
+    } catch (error) {
+      console.log(JSON.stringify({
+        source: 'retry-failed-events',
+        ok: false,
+        eventKey: row.event_key,
+        error: String(error)
+      }));
+    }
+  }
+
+  return { failuresRetried: retried, failuresRetrySucceeded: retrySucceeded };
+}
 
 // Helper to append bridge-origin marker to content if not present
 function appendOriginMarker(content: any, marker: string): any {
@@ -685,7 +746,7 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
 
   let ticket = await getTicketMapByUpmindTicketId(env, ticketId);
 
-  if (!ticket && hasZohoConfig(env)) {
+  if ((!ticket || !ticket.zoho_ticket_id || ticket.zoho_ticket_id.startsWith('pending-')) && hasZohoConfig(env)) {
     await syncUpmindTicketToZoho(payload, env);
     ticket = await getTicketMapByUpmindTicketId(env, ticketId);
   }
