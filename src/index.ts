@@ -1059,7 +1059,6 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
     method,
     headers: {
       'authorization': `Zoho-oauthtoken ${accessToken}`,
-      'orgId': String(env.ZDK_ORG_ID),
       'content-type': 'application/json'
     },
     body: body ? JSON.stringify(stripUndefined(body)) : undefined
@@ -1087,7 +1086,7 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
 }
 
 function hasZohoConfig(env: Env): boolean {
-  return Boolean(env.ZOHO_CLIENT_ID && env.ZOHO_CLIENT_SECRET && env.ZOHO_REFRESH_TOKEN && env.ZDK_ORG_ID && env.ZDK_DEPARTMENT_ID);
+  return Boolean(env.ZOHO_CLIENT_ID && env.ZOHO_CLIENT_SECRET && env.ZOHO_REFRESH_TOKEN && env.ZDK_DEPARTMENT_ID);
 }
 
 function missingZohoConfig(env: Env): string[] {
@@ -1095,7 +1094,6 @@ function missingZohoConfig(env: Env): string[] {
   if (!env.ZOHO_CLIENT_ID) missing.push('ZOHO_CLIENT_ID');
   if (!env.ZOHO_CLIENT_SECRET) missing.push('ZOHO_CLIENT_SECRET');
   if (!env.ZOHO_REFRESH_TOKEN) missing.push('ZOHO_REFRESH_TOKEN');
-  if (!env.ZDK_ORG_ID) missing.push('ZDK_ORG_ID');
   if (!env.ZDK_DEPARTMENT_ID) missing.push('ZDK_DEPARTMENT_ID');
   return missing;
 }
