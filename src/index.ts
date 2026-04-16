@@ -31,6 +31,10 @@ export default {
 
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === 'OPTIONS') {
+      return withCors(request, env, new Response(null, { status: 204 }));
+    }
+
     // --- CRON SYNC ENDPOINT ---
     if (request.method === 'POST' && url.pathname === '/cron/sync') {
       const adminToken = env.ADMIN_TOKEN;
@@ -63,6 +67,10 @@ export default {
 
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/webhooks/upmind') {
       return json({ ok: true, webhook: 'upmind', validation: true, config: configStatus(env) });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/asap-bootstrap.js') {
+      return javascript(ASAP_BOOTSTRAP_JS);
     }
 
     if (request.method === 'POST' && url.pathname === '/webhooks/upmind') {
@@ -98,20 +106,20 @@ export default {
     if (request.method === 'GET' && url.pathname === '/auth/upmind-client-context') {
       const { resolveAuthenticatedUpmindClient } = await import('./auth');
       const client = await resolveAuthenticatedUpmindClient(request, env);
-      if (client) return json({ authenticated: true, ...client });
-      else return json({ authenticated: false });
+      if (client) return withCors(request, env, json({ authenticated: true, ...client }));
+      else return withCors(request, env, json({ authenticated: false }));
     }
 
 
     if (request.method === 'GET' && url.pathname === '/auth/asap-jwt') {
       const { resolveAuthenticatedUpmindClient, generateZohoAsapJwt } = await import('./auth');
       const client = await resolveAuthenticatedUpmindClient(request, env);
-      if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
+      if (!client) return withCors(request, env, json({ ok: false, error: 'Not authenticated' }, 401));
       try {
         const token = await generateZohoAsapJwt(client, env);
-        return json({ token });
+        return withCors(request, env, json({ token }));
       } catch (err: any) {
-        return json({ ok: false, error: err.message || 'JWT error' }, 400);
+        return withCors(request, env, json({ ok: false, error: err.message || 'JWT error' }, 400));
       }
     }
 
@@ -119,31 +127,31 @@ export default {
     if (request.method === 'GET' && url.pathname === '/auth/helpcenter-jwt') {
       const { resolveAuthenticatedUpmindClient, generateZohoHelpCenterJwt } = await import('./auth');
       const client = await resolveAuthenticatedUpmindClient(request, env);
-      if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
+      if (!client) return withCors(request, env, json({ ok: false, error: 'Not authenticated' }, 401));
       try {
         const token = await generateZohoHelpCenterJwt(client, env);
-        return json({ token });
+        return withCors(request, env, json({ token }));
       } catch (err: any) {
-        return json({ ok: false, error: err.message || 'JWT error' }, 400);
+        return withCors(request, env, json({ ok: false, error: err.message || 'JWT error' }, 400));
       }
     }
 
     if (request.method === 'GET' && url.pathname === '/auth/helpcenter-launch') {
       const { resolveAuthenticatedUpmindClient, generateZohoHelpCenterJwt } = await import('./auth');
       const client = await resolveAuthenticatedUpmindClient(request, env);
-      if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
+      if (!client) return withCors(request, env, json({ ok: false, error: 'Not authenticated' }, 401));
       try {
         const token = await generateZohoHelpCenterJwt(client, env);
         const launchUrl = env.ZOHO_HELP_CENTER_URL ? `${env.ZOHO_HELP_CENTER_URL}?jwt=${encodeURIComponent(token)}` : undefined;
-        return json({ token, launchUrl, email: client.email });
+        return withCors(request, env, json({ token, launchUrl, email: client.email }));
       } catch (err: any) {
-        return json({ ok: false, error: err.message || 'JWT error' }, 400);
+        return withCors(request, env, json({ ok: false, error: err.message || 'JWT error' }, 400));
       }
     }
 
     if (request.method === 'POST' && url.pathname === '/auth/logout') {
       // TODO: implement logout logic (clear session/cookie if used)
-      return json({ ok: true, loggedOut: true });
+      return withCors(request, env, json({ ok: true, loggedOut: true }));
     }
 
     // --- ADMIN/DEBUG/BACKFILL ENDPOINTS ---
@@ -639,6 +647,7 @@ export async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Pro
       const created = await zohoRequest(env, 'POST', '/tickets', body);
       zohoTicketId = readString(created.id) ?? deepReadString(created, ['data', 'id']) ?? zohoTicketId;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       console.log(JSON.stringify({
         source: 'zoho-api',
         action: 'create-ticket',
@@ -646,9 +655,9 @@ export async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Pro
         upmindTicketId: ticketId,
         email,
         contactPending: zohoContactId.startsWith('pending-'),
-        error: String(error)
+        error: errorMessage
       }));
-      zohoTicketId = `pending-zoho-ticket-${ticketId}`;
+      throw new Error(`Cannot create Zoho ticket for Upmind ticket ${ticketId}: ${errorMessage}`);
     }
   } else if (!hasZohoConfig(env)) {
     console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
@@ -696,7 +705,7 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
   } else if (!hasZohoConfig(env)) {
     console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
   } else {
-    zohoMessageId = `pending-zoho-message-${messageId}`;
+    throw new Error(`Cannot sync Upmind message ${messageId}: Zoho ticket is pending/missing or message content is empty`);
   }
 
   await env.BRIDGE_DB.prepare(
@@ -1485,6 +1494,73 @@ function json(data: unknown, status = 200): Response {
     }
   });
 }
+
+function javascript(source: string): Response {
+  return new Response(source, {
+    headers: {
+      'content-type': 'application/javascript; charset=utf-8',
+      'cache-control': 'public, max-age=300'
+    }
+  });
+}
+
+function withCors(request: Request, env: Env, response: Response): Response {
+  const origin = request.headers.get('origin');
+  if (!origin || !isAllowedCorsOrigin(origin, env)) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set('access-control-allow-origin', origin);
+  headers.set('access-control-allow-credentials', 'true');
+  headers.set('access-control-allow-methods', 'GET,POST,OPTIONS');
+  headers.set('access-control-allow-headers', 'content-type, authorization, x-upmind-client-id, x-upmind-client-email, x-upmind-client-name, x-upmind-auth-signature');
+  headers.set('vary', 'Origin');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+function isAllowedCorsOrigin(origin: string, env: Env): boolean {
+  const configured = env.CORS_ALLOWED_ORIGINS?.split(',').map((value) => value.trim()).filter(Boolean);
+  const allowed = configured && configured.length > 0
+    ? configured
+    : [
+      'https://portal.zebrabyte.ro',
+      'https://help-desk.zebrabyte-uk.workers.dev'
+    ];
+
+  return allowed.includes(origin);
+}
+
+const ASAP_BOOTSTRAP_JS = `(() => {
+  const script = document.currentScript;
+  const bridgeOrigin = script && script.src ? new URL(script.src).origin : window.location.origin;
+  const fetchJson = (path) => fetch(bridgeOrigin + path, { credentials: 'include' }).then((response) => response.json());
+
+  fetchJson('/auth/upmind-client-context')
+    .then((ctx) => {
+      if (!ctx || !ctx.authenticated) return;
+
+      let used = false;
+      const getJwtTokenCallback = async (success, failure) => {
+        try {
+          const data = await fetchJson('/auth/asap-jwt');
+          if (!data || !data.token) throw new Error('Missing token');
+          success(data.token);
+        } catch (error) {
+          failure(error);
+        }
+      };
+
+      window.ZohoDeskAsapReady(() => {
+        if (used) return;
+        used = true;
+        ZohoDeskAsap.invoke('login', getJwtTokenCallback);
+      });
+    })
+    .catch(() => {});
+})();`;
 
 async function verifyWebhookJwt(token: string, env: Env): Promise<boolean> {
   const secret = env.ZDK_WEBHOOK_JWT_SECRET;

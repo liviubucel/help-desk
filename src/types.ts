@@ -29,6 +29,7 @@ export interface Env {
 	UPMIND_SESSION_JWT_SECRET?: string;
 	UPMIND_SESSION_COOKIE_NAME?: string;
 	UPMIND_SESSION_AUTH_HEADER?: string;
+	CORS_ALLOWED_ORIGINS?: string;
 }
 
 export {};
