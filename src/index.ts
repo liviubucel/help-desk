@@ -217,8 +217,22 @@ export default {
 };
 
 async function runMaintenanceSync(env: Env): Promise<JsonRecord> {
-  const cronResult = await handleCronSync(env) as JsonRecord;
-  const retryResult = await retryFailedRawEvents(env);
+  let cronResult: JsonRecord = { ok: true, cronError: null };
+  try {
+    cronResult = await handleCronSync(env) as JsonRecord;
+  } catch (error) {
+    cronResult = { ok: false, cronError: error instanceof Error ? error.message : String(error) };
+    console.error(`Cron pending sync error: ${cronResult.cronError}`);
+  }
+
+  let retryResult: JsonRecord = { failuresRetried: 0, failuresRetrySucceeded: 0 };
+  try {
+    retryResult = await retryFailedRawEvents(env);
+  } catch (error) {
+    retryResult = { failuresRetried: 0, failuresRetrySucceeded: 0, retryError: error instanceof Error ? error.message : String(error) };
+    console.error(`Cron retry sync error: ${retryResult.retryError}`);
+  }
+
   return { ...cronResult, ...retryResult };
 }
 
@@ -1066,7 +1080,7 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
   console.log(JSON.stringify({ source: 'zoho-api', method, path, status: response.status, ok: response.ok, body: parsed }));
 
   if (!response.ok) {
-    throw new Error(`Zoho API request failed: ${method} ${path} (${response.status})`);
+    throw new Error(`Zoho API request failed: ${method} ${path} (${response.status}) ${previewPayload(parsed)}`);
   }
 
   return parsed;

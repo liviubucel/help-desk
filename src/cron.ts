@@ -8,9 +8,21 @@ export async function handleCronSync(env: Env): Promise<object> {
   ).all();
 
   let contactsSynced = 0;
+  let contactSyncFailed = 0;
   for (const row of pendingContacts.results) {
-    await syncUpmindClientToZoho({ upmind_client_id: row.upmind_client_id, email: row.email }, env);
-    contactsSynced++;
+    try {
+      await syncUpmindClientToZoho({ upmind_client_id: row.upmind_client_id, email: row.email }, env);
+      contactsSynced++;
+    } catch (error) {
+      contactSyncFailed++;
+      console.log(JSON.stringify({
+        source: 'cron-sync',
+        action: 'sync-contact',
+        ok: false,
+        upmindClientId: row.upmind_client_id,
+        error: String(error)
+      }));
+    }
   }
 
   // Find all tickets with pending Zoho sync
@@ -19,16 +31,28 @@ export async function handleCronSync(env: Env): Promise<object> {
   ).all();
 
   let ticketsSynced = 0;
+  let ticketSyncFailed = 0;
   for (const row of pendingTickets.results) {
     // Ensure payload keys are compatible for extractors
-    await syncUpmindTicketToZoho({
-      upmind_ticket_id: row.upmind_ticket_id,
-      upmind_client_id: row.upmind_client_id,
-      ticket_id: row.upmind_ticket_id, // for legacy extractor compatibility
-      client_id: row.upmind_client_id  // for legacy extractor compatibility
-    }, env);
-    ticketsSynced++;
+    try {
+      await syncUpmindTicketToZoho({
+        upmind_ticket_id: row.upmind_ticket_id,
+        upmind_client_id: row.upmind_client_id,
+        ticket_id: row.upmind_ticket_id, // for legacy extractor compatibility
+        client_id: row.upmind_client_id  // for legacy extractor compatibility
+      }, env);
+      ticketsSynced++;
+    } catch (error) {
+      ticketSyncFailed++;
+      console.log(JSON.stringify({
+        source: 'cron-sync',
+        action: 'sync-ticket',
+        ok: false,
+        upmindTicketId: row.upmind_ticket_id,
+        error: String(error)
+      }));
+    }
   }
 
-  return { ok: true, contactsSynced, ticketsSynced };
+  return { ok: true, contactsSynced, contactSyncFailed, ticketsSynced, ticketSyncFailed };
 }
