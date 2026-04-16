@@ -20,12 +20,15 @@ import { handleCronSync } from './cron';
 
 import type { Env } from './types';
 import { getZohoAccessToken } from './zoho-oauth';
+import { hmacSha256Hex, timingSafeEqual } from './utils/crypto';
 
 type JsonRecord = Record<string, unknown>;
 
-import { checkUpmindWebhookSignature, recordEventFailure } from './webhooks';
+import { checkUpmindWebhookSignature, getEventFailures, recordEventFailure } from './webhooks';
 
 export default {
+  scheduled,
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     // --- CRON SYNC ENDPOINT ---
@@ -84,7 +87,9 @@ export default {
       if (!jwt) {
         return json({ ok: false, error: 'Missing Zoho Desk JWT (x-zdesk-jwt)' }, 401);
       }
-      // TODO: Add real JWT validation here if desired (for now, accept any non-empty JWT)
+      if (env.ZDK_WEBHOOK_JWT_SECRET && !(await verifyWebhookJwt(jwt, env))) {
+        return json({ ok: false, error: 'Invalid Zoho Desk JWT' }, 401);
+      }
       return handleZohoWebhook(request, env);
     }
 
@@ -156,7 +161,7 @@ export default {
     }
     if (url.pathname === '/admin/db-status' && isAdmin(request)) {
       // Show table row counts (for debug)
-      const tables = ['contact_map', 'ticket_map', 'message_map', 'processed_events', 'raw_events'];
+      const tables = ['contact_map', 'ticket_map', 'message_map', 'processed_events', 'raw_events', 'oauth_tokens', 'event_failures'];
       const counts: Record<string, number> = {};
       for (const table of tables) {
         try {
@@ -167,6 +172,10 @@ export default {
         }
       }
       return json({ ok: true, counts });
+    }
+
+    if (url.pathname === '/admin/failures' && isAdmin(request)) {
+      return json({ ok: true, failures: await getEventFailures(env) });
     }
 
     // Debug: fetch raw event by eventKey
@@ -228,19 +237,6 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     return json({ ok: true, ignored: true, reason: 'loop-prevention', eventKey });
   }
 
-  if (await isDuplicate(env, eventKey)) {
-    return json({ ok: true, duplicate: true, eventKey });
-  }
-
-  await markProcessed(env, eventKey, 'upmind');
-  await storeRawEvent(env, 'upmind', eventName, eventKey, payload);
-
-      readString(payload.event),
-      readString(payload.name),
-      readString(payload.type),
-      readString(payload.action),
-      recursiveFindString(payload, ['event', 'eventName', 'eventType', 'name', 'type', 'action'])
-
   // Dacă avem un webhook de tip ticket_message, încearcă să extragi din object/object_id
   if (!ticketId && payload.object && typeof payload.object === 'object') {
     ticketId = (payload.object as any).ticket_id || (payload.object as any).ticketId || ticketId;
@@ -263,8 +259,15 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     preview: previewPayload(payload)
   }));
 
+  if (await isDuplicate(env, eventKey)) {
+    return json({ ok: true, duplicate: true, eventKey });
+  }
+
+  await storeRawEvent(env, 'upmind', eventName, eventKey, payload);
+
   // When syncing to Zoho, stamp [bridge-origin:upmind] in content/metadata
-  switch (eventName) {
+  try {
+    switch (eventName) {
         // Patch: tratează explicit user_posted_ticket_message_hook
         case 'user_posted_ticket_message_hook':
         case 'Ticket Message':
@@ -301,7 +304,19 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
         await syncUpmindClientToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       }
       break;
+    }
+  } catch (error) {
+    await recordEventFailure({
+      eventKey,
+      originSystem: 'upmind',
+      eventName,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      payloadJson: payload
+    }, env);
+    return json({ ok: false, source: 'upmind', eventName, eventKey, error: 'Sync failed' }, 500);
   }
+
+  await markProcessed(env, eventKey, 'upmind');
 
   return json({ ok: true, source: 'upmind', eventName, eventKey, ticketId, messageId, clientId });
 }
@@ -327,13 +342,6 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
     return json({ ok: true, ignored: true, reason: 'loop-prevention', eventKey });
   }
 
-  if (await isDuplicate(env, eventKey)) {
-    return json({ ok: true, duplicate: true, eventKey });
-  }
-
-  await markProcessed(env, eventKey, 'zoho');
-  await storeRawEvent(env, 'zoho', eventName, eventKey, payload);
-
   const ticketId = extractZohoTicketId(payload);
   const contactId = extractZohoContactId(payload);
   const messageId = extractZohoMessageId(payload);
@@ -351,8 +359,15 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
     preview: previewPayload(payload)
   }));
 
+  if (await isDuplicate(env, eventKey)) {
+    return json({ ok: true, duplicate: true, eventKey });
+  }
+
+  await storeRawEvent(env, 'zoho', eventName, eventKey, payload);
+
   // When syncing to Upmind, stamp [bridge-origin:zoho] in content/metadata
-  switch (eventName) {
+  try {
+    switch (eventName) {
     case 'Contact_Add':
     case 'Contact_Update':
       await syncZohoContactToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
@@ -378,7 +393,19 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
         await syncZohoContactToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       }
       break;
+    }
+  } catch (error) {
+    await recordEventFailure({
+      eventKey,
+      originSystem: 'zoho',
+      eventName,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      payloadJson: payload
+    }, env);
+    return json({ ok: false, source: 'zoho', eventName, eventKey, error: 'Sync failed' }, 500);
   }
+
+  await markProcessed(env, eventKey, 'zoho');
 
   return json({ ok: true, source: 'zoho', eventName, eventKey, ticketId, contactId, messageId, status });
 }
@@ -457,9 +484,36 @@ async function ensureSchema(env: Env): Promise<void> {
     )
   `).run();
 
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS oauth_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      access_token TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS event_failures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_key TEXT NOT NULL,
+      origin_system TEXT NOT NULL,
+      event_name TEXT,
+      error_message TEXT,
+      payload_json TEXT,
+      retry_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
   await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_contact_map_email ON contact_map(email)').run();
   await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_ticket_map_upmind_client_id ON ticket_map(upmind_client_id)').run();
   await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_ticket_map_id ON message_map(ticket_map_id)').run();
+  await env.BRIDGE_DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_tokens_provider ON oauth_tokens(provider)').run();
+  await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_event_failures_event_key ON event_failures(event_key)').run();
+  await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_event_failures_origin_system ON event_failures(origin_system)').run();
 }
 
 async function readPayload(request: Request): Promise<JsonRecord> {
@@ -955,7 +1009,13 @@ function configStatus(env: Env): JsonRecord {
     zohoRefreshToken: Boolean(env.ZOHO_REFRESH_TOKEN),
     zohoOrgId: Boolean(env.ZDK_ORG_ID),
     zohoDepartmentId: Boolean(env.ZDK_DEPARTMENT_ID),
-    zohoMissing: missingZohoConfig(env)
+    zohoMissing: missingZohoConfig(env),
+    zohoAsapJwtSecret: Boolean(env.ZOHO_ASAP_JWT_SECRET),
+    zohoHelpCenterJwtSecret: Boolean(env.ZOHO_HC_JWT_SECRET || env.ZOHO_ASAP_JWT_SECRET),
+    upmindContextSharedSecret: Boolean(env.UPMIND_CONTEXT_SHARED_SECRET),
+    upmindSessionJwtSecret: Boolean(env.UPMIND_SESSION_JWT_SECRET),
+    zohoWebhookJwtSecret: Boolean(env.ZDK_WEBHOOK_JWT_SECRET),
+    adminToken: Boolean(env.ADMIN_TOKEN)
   };
 }
 
@@ -1031,29 +1091,43 @@ async function getTicketMapByUpmindTicketId(env: Env, ticketId: string): Promise
 
 function extractUpmindTicketId(payload: JsonRecord): string | undefined {
   return firstNonEmpty([
+    deepReadString(payload, ['upmind_ticket_id']),
+    deepReadString(payload, ['ticket_id']),
+    deepReadString(payload, ['ticketId']),
+    deepReadString(payload, ['object', 'ticket_id']),
+    deepReadString(payload, ['object', 'ticketId']),
     deepReadString(payload, ['data', 'ticket', 'id']),
     deepReadString(payload, ['ticket', 'id']),
-    recursiveFindString(payload, ['ticketId', 'ticket_id'])
+    recursiveFindString(payload, ['upmind_ticket_id', 'ticketId', 'ticket_id'])
   ]);
 }
 
 function extractUpmindClientId(payload: JsonRecord): string | undefined {
   return firstNonEmpty([
+    deepReadString(payload, ['upmind_client_id']),
+    deepReadString(payload, ['client_id']),
+    deepReadString(payload, ['clientId']),
+    deepReadString(payload, ['object', 'client_id']),
+    deepReadString(payload, ['object', 'clientId']),
     deepReadString(payload, ['data', 'client', 'id']),
     deepReadString(payload, ['client', 'id']),
     deepReadString(payload, ['data', 'customer', 'id']),
     deepReadString(payload, ['customer', 'id']),
-    recursiveFindString(payload, ['clientId', 'client_id', 'customerId', 'customer_id'])
+    recursiveFindString(payload, ['upmind_client_id', 'clientId', 'client_id', 'customerId', 'customer_id'])
   ]);
 }
 
 function extractUpmindMessageId(payload: JsonRecord): string | undefined {
   return firstNonEmpty([
+    deepReadString(payload, ['upmind_message_id']),
+    deepReadString(payload, ['message_id']),
+    deepReadString(payload, ['messageId']),
+    payload.object_type === 'ticket_message' ? readStringLike(payload.object_id) : undefined,
     deepReadString(payload, ['data', 'message', 'id']),
     deepReadString(payload, ['message', 'id']),
     deepReadString(payload, ['data', 'reply', 'id']),
     deepReadString(payload, ['reply', 'id']),
-    recursiveFindString(payload, ['messageId', 'message_id', 'replyId', 'reply_id'])
+    recursiveFindString(payload, ['upmind_message_id', 'messageId', 'message_id', 'replyId', 'reply_id'])
   ]);
 }
 
@@ -1356,10 +1430,57 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+async function verifyWebhookJwt(token: string, env: Env): Promise<boolean> {
+  const secret = env.ZDK_WEBHOOK_JWT_SECRET;
+  if (!secret) return true;
+
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+
+  try {
+    const [headerB64, payloadB64, signatureB64] = parts;
+    const header = JSON.parse(base64urlDecode(headerB64)) as JsonRecord;
+    const payload = JSON.parse(base64urlDecode(payloadB64)) as JsonRecord;
+    if (header.alg !== 'HS256') return false;
+
+    const sigHex = await hmacSha256Hex(secret, `${headerB64}.${payloadB64}`);
+    const sigBytes = new Uint8Array(sigHex.match(/.{1,2}/g)!.map((b) => parseInt(b, 16)));
+    const expected = base64url(sigBytes);
+    if (!timingSafeEqual(new TextEncoder().encode(signatureB64), new TextEncoder().encode(expected))) {
+      return false;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof payload.exp === 'number' && payload.exp <= now) return false;
+    if (typeof payload.nbf === 'number' && payload.nbf > now) return false;
+    if (env.ZDK_WEBHOOK_ISSUER && payload.iss !== env.ZDK_WEBHOOK_ISSUER) return false;
+    if (env.ZDK_WEBHOOK_AUDIENCE) {
+      const aud = payload.aud;
+      if (Array.isArray(aud)) return aud.includes(env.ZDK_WEBHOOK_AUDIENCE);
+      return aud === env.ZDK_WEBHOOK_AUDIENCE;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function base64url(input: Uint8Array): string {
+  return btoa(String.fromCharCode(...input)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlDecode(input: string): string {
+  const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+  return atob(padded);
+}
+
 // Helper to fetch Upmind client details by clientId
 export async function fetchUpmindClientById(env: Env, clientId: string): Promise<any> {
   if (!env.UPMIND_API_BASE_URL || !env.UPMIND_API_TOKEN) return null;
-  const url = `${env.UPMIND_API_BASE_URL}/clients/${clientId}`;
+  const baseUrl = env.UPMIND_API_BASE_URL.replace(/\/$/, '');
+  const url = `${baseUrl}/clients/${encodeURIComponent(clientId)}`;
   const res = await fetch(url, {
     headers: { 'Authorization': `Bearer ${env.UPMIND_API_TOKEN}` }
   });

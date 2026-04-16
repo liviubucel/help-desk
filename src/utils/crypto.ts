@@ -47,11 +47,18 @@ export async function verifyUpmindWebhookSignature({
 	if (allowInsecure) return true;
 	if (!secret || !signature) return false;
 	const expected = await hmacSha256Hex(secret, rawBody);
+
+	const candidates = [
+		signature,
+		signature.replace(/^sha256=/i, ''),
+		signature.replace(/^hmac-sha256=/i, '')
+	].filter(Boolean);
+
 	try {
-		return timingSafeEqual(
-			new TextEncoder().encode(signature),
+		return candidates.some((candidate) => timingSafeEqual(
+			new TextEncoder().encode(candidate.toLowerCase()),
 			new TextEncoder().encode(expected)
-		);
+		));
 	} catch {
 		return false;
 	}

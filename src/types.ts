@@ -18,6 +18,7 @@ export interface Env {
 	ZOHO_ACCOUNTS_URL?: string;
 	ZDK_WEBHOOK_AUDIENCE?: string;
 	ZDK_WEBHOOK_ISSUER?: string;
+	ZDK_WEBHOOK_JWT_SECRET?: string;
 	ZDK_IGNORE_SOURCE_ID?: string;
 	ZDK_WEBHOOK_SECRET?: string;
 	ZOHO_HELP_CENTER_URL?: string;
@@ -25,6 +26,9 @@ export interface Env {
 	ZOHO_HC_JWT_SECRET?: string;
 	ZOHO_ASAP_JWT_SECRET?: string;
 	ZOHO_ASAP_JWT_TTL_MS?: string;
+	UPMIND_SESSION_JWT_SECRET?: string;
+	UPMIND_SESSION_COOKIE_NAME?: string;
+	UPMIND_SESSION_AUTH_HEADER?: string;
 }
 
 export {};

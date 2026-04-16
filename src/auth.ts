@@ -1,8 +1,22 @@
 import { hmacSha256Hex, timingSafeEqual } from './utils/crypto';
+import type { Env } from './types';
+
+export interface AuthenticatedClient {
+	clientId: string;
+	email: string;
+	name?: string;
+}
+
 // Helper to base64url encode a string or buffer
 function base64url(input: string | Uint8Array): string {
 	let str = typeof input === 'string' ? btoa(input) : btoa(String.fromCharCode(...input));
 	return str.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlDecode(input: string): string {
+	const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+	const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+	return atob(padded);
 }
 
 // Helper to sign JWT with HS256 using Web Crypto API
@@ -21,12 +35,16 @@ export async function generateZohoAsapJwt(client: AuthenticatedClient, env: Env)
 	const secret = env.ZOHO_ASAP_JWT_SECRET;
 	if (!secret) throw new Error('Missing ZOHO_ASAP_JWT_SECRET');
 	if (!client.email) throw new Error('Missing client email');
-	// TODO: check login enabled, contact mapping, etc.
 	const now = Math.floor(Date.now() / 1000);
-	const ttl = Math.min(Number(env.ZOHO_ASAP_JWT_TTL_MS ?? 300000) / 1000, 600); // max 10 min
+	const ttl = getJwtTtlSeconds(env);
 	const payload = {
+		sub: client.clientId,
 		email: client.email,
+		name: client.name,
 		email_verified: true,
+		iat: now,
+		nbf: now,
+		exp: now + ttl,
 		not_before: now,
 		not_after: now + ttl
 	};
@@ -38,22 +56,25 @@ export async function generateZohoHelpCenterJwt(client: AuthenticatedClient, env
 	if (!secret) throw new Error('Missing ZOHO_HC_JWT_SECRET');
 	if (!client.email) throw new Error('Missing client email');
 	const now = Math.floor(Date.now() / 1000);
-	const ttl = Math.min(Number(env.ZOHO_ASAP_JWT_TTL_MS ?? 300000) / 1000, 600);
+	const ttl = getJwtTtlSeconds(env);
 	const payload = {
+		sub: client.clientId,
 		email: client.email,
+		name: client.name,
 		email_verified: true,
+		iat: now,
+		nbf: now,
+		exp: now + ttl,
 		not_before: now,
 		not_after: now + ttl
 	};
 	return signJwtHS256(payload, secret);
 }
 
-import type { Env } from './types';
-
-export interface AuthenticatedClient {
-	clientId: string;
-	email: string;
-	name?: string;
+function getJwtTtlSeconds(env: Env): number {
+	const configuredMs = Number(env.ZOHO_ASAP_JWT_TTL_MS ?? 300000);
+	const configuredSeconds = Number.isFinite(configuredMs) && configuredMs > 0 ? configuredMs / 1000 : 300;
+	return Math.floor(Math.min(configuredSeconds, 600));
 }
 
 /**
@@ -78,6 +99,9 @@ export async function resolveAuthenticatedUpmindClient(request: Request, env: En
     return null;
   }
 
+  const jwtClient = await resolveClientFromUpmindJwt(request, env);
+  if (jwtClient) return jwtClient;
+
   // Strategy B: Dev mode query param (explicit dev fallback)
   if (env.ALLOW_DEV_AUTH_CONTEXT === 'true') {
     const url = new URL(request.url);
@@ -91,4 +115,87 @@ export async function resolveAuthenticatedUpmindClient(request: Request, env: En
 
   // Strategy C: Stub fallback
   return null;
+}
+
+async function resolveClientFromUpmindJwt(request: Request, env: Env): Promise<AuthenticatedClient | null> {
+  const secret = env.UPMIND_SESSION_JWT_SECRET;
+  if (!secret) return null;
+
+  const token = readBearerToken(request, env) ?? readCookieToken(request, env);
+  if (!token) return null;
+
+  const payload = await verifyJwtHS256(token, secret);
+  if (!payload) return null;
+
+  const clientId = readClaim(payload, ['clientId', 'client_id', 'upmindClientId', 'upmind_client_id', 'sub']);
+  const email = readClaim(payload, ['email', 'clientEmail', 'client_email']);
+  const name = readClaim(payload, ['name', 'clientName', 'client_name']);
+  if (!clientId || !email) return null;
+
+  return { clientId, email, name };
+}
+
+function readBearerToken(request: Request, env: Env): string | undefined {
+  const configuredHeader = env.UPMIND_SESSION_AUTH_HEADER;
+  const headerValue = configuredHeader ? request.headers.get(configuredHeader) : request.headers.get('authorization');
+  if (!headerValue) return undefined;
+  return headerValue.replace(/^Bearer\s+/i, '').trim();
+}
+
+function readCookieToken(request: Request, env: Env): string | undefined {
+  const cookieName = env.UPMIND_SESSION_COOKIE_NAME || 'upmind_session';
+  const cookieHeader = request.headers.get('cookie');
+  if (!cookieHeader) return undefined;
+
+  for (const part of cookieHeader.split(';')) {
+    const [name, ...valueParts] = part.trim().split('=');
+    if (name === cookieName) return decodeURIComponent(valueParts.join('='));
+  }
+
+  return undefined;
+}
+
+async function verifyJwtHS256(token: string, secret: string): Promise<Record<string, unknown> | null> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  let header: Record<string, unknown>;
+  let payload: Record<string, unknown>;
+
+  try {
+    header = JSON.parse(base64urlDecode(headerB64));
+    payload = JSON.parse(base64urlDecode(payloadB64));
+  } catch {
+    return null;
+  }
+
+  if (header.alg !== 'HS256') return null;
+
+  const sigHex = await hmacSha256Hex(secret, `${headerB64}.${payloadB64}`);
+  const sigBytes = new Uint8Array(sigHex.match(/.{1,2}/g)!.map(b => parseInt(b, 16)));
+  const expectedSignature = base64url(sigBytes);
+  if (!timingSafeEqual(
+    new TextEncoder().encode(signatureB64),
+    new TextEncoder().encode(expectedSignature)
+  )) {
+    return null;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp === 'number' && payload.exp <= now) return null;
+  if (typeof payload.nbf === 'number' && payload.nbf > now) return null;
+  if (typeof payload.not_after === 'number' && payload.not_after <= now) return null;
+  if (typeof payload.not_before === 'number' && payload.not_before > now) return null;
+
+  return payload;
+}
+
+function readClaim(payload: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === 'number') return String(value);
+  }
+  return undefined;
 }
