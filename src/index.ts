@@ -291,14 +291,6 @@ async function retryFailedRawEvents(env: Env, limit = 10): Promise<JsonRecord> {
   return { failuresRetried: retried, failuresRetrySucceeded: retrySucceeded };
 }
 
-// Helper to append bridge-origin marker to content if not present
-function appendOriginMarker(content: any, marker: string): any {
-  if (typeof content === 'string') {
-    return content.includes(marker) ? content : `${content}\n${marker}`;
-  }
-  return content;
-}
-
 async function handleUpmindWebhook(request: Request, env: Env): Promise<Response> {
   await ensureSchema(env);
   const payload = await readPayload(request);
@@ -315,12 +307,6 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     recursiveFindString(payload, ['hook_code', 'hook_category', 'event', 'eventName', 'eventType', 'type', 'action'])
   ])) ?? 'upmind.unknown';
   const eventKey = await computeEventKey('upmind', request, payload);
-
-  // Loop prevention: ignore events with bridge-origin:zoho marker
-  const originMarker = '[bridge-origin:zoho]';
-  if (JSON.stringify(payload).includes(originMarker)) {
-    return json({ ok: true, ignored: true, reason: 'loop-prevention', eventKey });
-  }
 
   // Dacă avem un webhook de tip ticket_message, încearcă să extragi din object/object_id
   if (!ticketId && payload.object && typeof payload.object === 'object') {
@@ -350,7 +336,6 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
 
   await storeRawEvent(env, 'upmind', eventName, eventKey, payload);
 
-  // When syncing to Zoho, stamp [bridge-origin:upmind] in content/metadata
   try {
     switch (eventName) {
         // Patch: tratează explicit user_posted_ticket_message_hook
@@ -370,12 +355,12 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     case 'Client opened new ticket':
     case 'Staff opened new ticket':
     case 'Ticket_Add':
-      await syncUpmindTicketToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
+      await syncUpmindTicketToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       break;
     case 'Client posted ticket message':
     case 'Staff replied to ticket':
     case 'Ticket client replied':
-      await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
+      await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       break;
     case 'Ticket closed':
     case 'Ticket reopened':
@@ -385,9 +370,9 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
       break;
     default:
       if (ticketId && messageId) {
-        await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
+        await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       } else if (ticketId) {
-        await syncUpmindTicketToZoho({ ...payload, bridge_origin: 'upmind', content: appendOriginMarker(payload.content, '[bridge-origin:upmind]') }, env);
+        await syncUpmindTicketToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       } else if (clientId) {
         await syncUpmindClientToZoho({ ...payload, bridge_origin: 'upmind' }, env);
       }
@@ -425,12 +410,6 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
   ])) ?? 'zoho.unknown';
   const eventKey = await computeEventKey('zoho', request, payload);
 
-  // Loop prevention: ignore events with bridge-origin:upmind marker
-  const originMarker = '[bridge-origin:upmind]';
-  if (JSON.stringify(payload).includes(originMarker)) {
-    return json({ ok: true, ignored: true, reason: 'loop-prevention', eventKey });
-  }
-
   const ticketId = extractZohoTicketId(payload);
   const contactId = extractZohoContactId(payload);
   const messageId = extractZohoMessageId(payload);
@@ -454,7 +433,6 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
 
   await storeRawEvent(env, 'zoho', eventName, eventKey, payload);
 
-  // When syncing to Upmind, stamp [bridge-origin:zoho] in content/metadata
   try {
     switch (eventName) {
     case 'Contact_Add':
@@ -462,23 +440,26 @@ async function handleZohoWebhook(request: Request, env: Env): Promise<Response> 
       await syncZohoContactToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       break;
     case 'Ticket_Add':
-      await syncZohoTicketToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
+      await syncZohoTicketToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       break;
     case 'Ticket_Comment_Add':
     case 'Ticket_Thread_Add':
     case 'AGENT':
-      await syncZohoReplyToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
+    case 'ENDUSER':
+    case 'END_USER':
+    case 'CUSTOMER':
+      await syncZohoReplyToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       break;
     case 'Ticket_Update':
       await syncZohoStatusToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       break;
     default:
       if (ticketId && messageId) {
-        await syncZohoReplyToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
+        await syncZohoReplyToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       } else if (ticketId && status) {
         await syncZohoStatusToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       } else if (ticketId) {
-        await syncZohoTicketToUpmind({ ...payload, bridge_origin: 'zoho', content: appendOriginMarker(payload.content, '[bridge-origin:zoho]') }, env);
+        await syncZohoTicketToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       } else if (contactId) {
         await syncZohoContactToUpmind({ ...payload, bridge_origin: 'zoho' }, env);
       }
@@ -758,6 +739,10 @@ async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<v
   const content = formatUpmindToZohoMessage(payload);
 
   if (!ticketId || !messageId) return;
+  const existingMessage = await env.BRIDGE_DB.prepare(
+    'SELECT zoho_message_id FROM message_map WHERE upmind_message_id = ?1 LIMIT 1'
+  ).bind(messageId).first<{ zoho_message_id?: string }>();
+  if (existingMessage?.zoho_message_id && !existingMessage.zoho_message_id.startsWith('pending-')) return;
 
   let ticket = await getTicketMapByUpmindTicketId(env, ticketId);
 
@@ -856,7 +841,7 @@ async function syncZohoContactToUpmind(payload: JsonRecord, env: Env): Promise<v
 
 async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<void> {
   const zohoTicketId = extractZohoTicketId(payload);
-  const zohoContactId = extractZohoContactId(payload);
+  let zohoContactId = extractZohoContactId(payload);
   const status = extractZohoStatus(payload) ?? 'open';
 
   if (!zohoTicketId) return;
@@ -869,10 +854,27 @@ async function syncZohoTicketToUpmind(payload: JsonRecord, env: Env): Promise<vo
   if ((!upmindTicketId || upmindTicketId.startsWith('pending-')) && hasUpmindConfig(env)) {
     let upmindClientId: string | undefined;
 
+    if (!zohoContactId) {
+      const fromTicketMap = await env.BRIDGE_DB.prepare(
+        'SELECT zoho_contact_id FROM ticket_map WHERE zoho_ticket_id = ?1 LIMIT 1'
+      ).bind(zohoTicketId).first<{ zoho_contact_id?: string }>();
+      zohoContactId = fromTicketMap?.zoho_contact_id;
+    }
+
+    const zohoEmail = extractZohoEmail(payload);
+    if ((zohoContactId || zohoEmail) && hasUpmindConfig(env)) {
+      await syncZohoContactToUpmind(payload, env);
+    }
+
     if (zohoContactId) {
       upmindClientId = (await env.BRIDGE_DB.prepare(
         'SELECT upmind_client_id FROM contact_map WHERE zoho_contact_id = ?1 LIMIT 1'
       ).bind(zohoContactId).first<{ upmind_client_id?: string }>())?.upmind_client_id;
+    }
+    if (!upmindClientId && zohoEmail) {
+      upmindClientId = (await env.BRIDGE_DB.prepare(
+        'SELECT upmind_client_id FROM contact_map WHERE email = ?1 LIMIT 1'
+      ).bind(zohoEmail).first<{ upmind_client_id?: string }>())?.upmind_client_id;
     }
 
     try {
@@ -918,7 +920,7 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
   const sourceType = deepReadString(payload, ['source', 'type']);
   const commenterType = deepReadString(payload, ['commenter', 'type']);
 
-  if (sourceType === 'SYSTEM' && commenterType !== 'AGENT') return;
+  if (sourceType === 'SYSTEM' && !formatZohoToUpmindMessage(payload)) return;
 
   if (!zohoTicketId || !zohoMessageId) {
     // Log and persist failure for missing messageId
@@ -1066,7 +1068,8 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
     method,
     headers: {
       'authorization': `Zoho-oauthtoken ${accessToken}`,
-      'content-type': 'application/json'
+      'content-type': 'application/json',
+      ...(env.ZDK_IGNORE_SOURCE_ID ? { sourceId: env.ZDK_IGNORE_SOURCE_ID } : {})
     },
     body: body ? JSON.stringify(stripUndefined(body)) : undefined
   });
@@ -1128,6 +1131,7 @@ function configStatus(env: Env): JsonRecord {
     zohoRefreshToken: Boolean(env.ZOHO_REFRESH_TOKEN),
     zohoOrgId: Boolean(env.ZDK_ORG_ID),
     zohoDepartmentId: Boolean(env.ZDK_DEPARTMENT_ID),
+    zohoIgnoreSourceId: Boolean(env.ZDK_IGNORE_SOURCE_ID),
     zohoMissing: missingZohoConfig(env),
     zohoAsapJwtSecret: Boolean(env.ZOHO_ASAP_JWT_SECRET),
     zohoHelpCenterJwtSecret: Boolean(env.ZOHO_HC_JWT_SECRET || env.ZOHO_ASAP_JWT_SECRET),
@@ -1401,6 +1405,10 @@ function extractZohoMessageId(payload: JsonRecord): string | undefined {
 
 function extractZohoEmail(payload: JsonRecord): string | undefined {
   return firstNonEmpty([
+    deepReadString(payload, ['data', 'contact', 'email']),
+    deepReadString(payload, ['contact', 'email']),
+    deepReadString(payload, ['commenter', 'emailAddress']),
+    deepReadString(payload, ['commenter', 'email']),
     deepReadString(payload, ['data', 'email']),
     deepReadString(payload, ['email']),
     recursiveFindString(payload, ['email'])
@@ -1477,75 +1485,14 @@ function formatUpmindToZohoMessage(payload: JsonRecord): string {
   const raw = extractUpmindDescription(payload) ?? '';
   const content = raw.trim();
   if (!content) return '';
-
-  const actorType = firstNonEmpty([
-    deepReadString(payload, ['actor_type']),
-    deepReadString(payload, ['object', 'source_type'])
-  ]) ?? 'client';
-  const actorName = firstNonEmpty([
-    deepReadString(payload, ['object', 'actor_name']),
-    deepReadString(payload, ['object', 'client_name']),
-    deepReadString(payload, ['object', 'ticket', 'client', 'full_name']),
-    deepReadString(payload, ['object', 'ticket', 'client', 'fullname']),
-    deepReadString(payload, ['object', 'ticket', 'client', 'email'])
-  ]) ?? 'Client';
-  const sourceLabel = actorType.toLowerCase().includes('staff') || actorType.toLowerCase().includes('user')
-    ? 'Upmind Support'
-    : 'Upmind Client';
-
-  const ticketLink = firstNonEmpty([
-    deepReadString(payload, ['links', 'ticket', 'admin_view']),
-    deepReadString(payload, ['links', 'ticket', 'view']),
-    deepReadString(payload, ['object', 'ticket', 'web_url'])
-  ]);
-  const ticketReference = firstNonEmpty([
-    deepReadString(payload, ['object', 'ticket', 'reference']),
-    deepReadString(payload, ['ticket', 'reference'])
-  ]);
-
-  const linkLine = ticketLink
-    ? ticketReference
-      ? `\n\nView Ticket (${ticketReference}): ${ticketLink}`
-      : `\n\nView Ticket: ${ticketLink}`
-    : '';
-
-  return `[${sourceLabel}: ${actorName}] ${content}${linkLine}\n[bridge-origin:upmind]`;
+  return content;
 }
 
 function formatZohoToUpmindMessage(payload: JsonRecord): string {
   const raw = htmlToText(extractZohoDescription(payload) ?? '');
   const content = raw.trim();
   if (!content) return '';
-
-  const commenterType = firstNonEmpty([
-    deepReadString(payload, ['commenter', 'type']),
-    deepReadString(payload, ['source', 'type'])
-  ]) ?? 'AGENT';
-  const commenterName = firstNonEmpty([
-    deepReadString(payload, ['commenter', 'name']),
-    [deepReadString(payload, ['commenter', 'firstName']), deepReadString(payload, ['commenter', 'lastName'])].filter(Boolean).join(' ').trim(),
-    deepReadString(payload, ['assignee', 'email']),
-    'Support'
-  ]) ?? 'Support';
-  const sourceLabel = commenterType.toUpperCase() === 'AGENT' ? 'Zoho Support' : 'Zoho';
-
-  const ticketLink = firstNonEmpty([
-    deepReadString(payload, ['webUrl']),
-    deepReadString(payload, ['ticket', 'webUrl'])
-  ]);
-  const ticketNumber = firstNonEmpty([
-    deepReadString(payload, ['ticketNumber']),
-    deepReadString(payload, ['ticket', 'ticketNumber']),
-    deepReadString(payload, ['ticketId'])
-  ]);
-
-  const linkLine = ticketLink
-    ? ticketNumber
-      ? `\n\nView Ticket (${ticketNumber}): ${ticketLink}`
-      : `\n\nView Ticket: ${ticketLink}`
-    : '';
-
-  return `[${sourceLabel}: ${commenterName}] ${content}${linkLine}\n[bridge-origin:zoho]`;
+  return content;
 }
 
 function recursiveFindString(value: unknown, keys: string[], depth = 0): string | undefined {
