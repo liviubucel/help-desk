@@ -1,5 +1,5 @@
 import type { Env } from './types';
-import { syncUpmindClientToZoho, syncUpmindTicketToZoho } from './index';
+import { syncUpmindClientToZoho } from './index';
 
 export async function handleCronSync(env: Env): Promise<object> {
   // Find all contacts with pending Zoho sync
@@ -25,34 +25,5 @@ export async function handleCronSync(env: Env): Promise<object> {
     }
   }
 
-  // Find all tickets with pending Zoho sync
-  const pendingTickets = await env.BRIDGE_DB.prepare(
-    "SELECT * FROM ticket_map WHERE zoho_ticket_id LIKE 'pending-%' OR zoho_ticket_id IS NULL LIMIT 100"
-  ).all();
-
-  let ticketsSynced = 0;
-  let ticketSyncFailed = 0;
-  for (const row of pendingTickets.results) {
-    // Ensure payload keys are compatible for extractors
-    try {
-      await syncUpmindTicketToZoho({
-        upmind_ticket_id: row.upmind_ticket_id,
-        upmind_client_id: row.upmind_client_id,
-        ticket_id: row.upmind_ticket_id, // for legacy extractor compatibility
-        client_id: row.upmind_client_id  // for legacy extractor compatibility
-      }, env);
-      ticketsSynced++;
-    } catch (error) {
-      ticketSyncFailed++;
-      console.log(JSON.stringify({
-        source: 'cron-sync',
-        action: 'sync-ticket',
-        ok: false,
-        upmindTicketId: row.upmind_ticket_id,
-        error: String(error)
-      }));
-    }
-  }
-
-  return { ok: true, contactsSynced, contactSyncFailed, ticketsSynced, ticketSyncFailed };
+  return { ok: true, contactsSynced, contactSyncFailed };
 }
