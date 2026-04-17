@@ -22,6 +22,7 @@ export interface Env {
 	ZDK_IGNORE_SOURCE_ID?: string;
 	ZDK_WEBHOOK_SECRET?: string;
 	ZOHO_HELP_CENTER_URL?: string;
+	ZOHO_HC_JWT_TERMINAL_URL?: string;
 	ADMIN_TOKEN?: string;
 	ZOHO_HC_JWT_SECRET?: string;
 	ZOHO_ASAP_JWT_SECRET?: string;

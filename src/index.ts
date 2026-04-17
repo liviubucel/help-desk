@@ -149,6 +149,22 @@ export default {
       }
     }
 
+    if (request.method === 'GET' && url.pathname === '/auth/helpcenter-jwt-redirect') {
+      const { resolveAuthenticatedUpmindClient, generateZohoHelpCenterJwt } = await import('./auth');
+      const client = await resolveAuthenticatedUpmindClient(request, env);
+      if (!client) return withCors(request, env, json({ ok: false, error: 'Not authenticated' }, 401));
+      const terminal = env.ZOHO_HC_JWT_TERMINAL_URL;
+      if (!terminal) return withCors(request, env, json({ ok: false, error: 'Missing ZOHO_HC_JWT_TERMINAL_URL' }, 400));
+      try {
+        const token = await generateZohoHelpCenterJwt(client, env);
+        const returnTo = url.searchParams.get('return_to') ?? '/';
+        const redirectUrl = `${terminal}${encodeURIComponent(token)}&return_to=${encodeURIComponent(returnTo)}`;
+        return Response.redirect(redirectUrl, 302);
+      } catch (err: any) {
+        return withCors(request, env, json({ ok: false, error: err.message || 'JWT error' }, 400));
+      }
+    }
+
     if (request.method === 'POST' && url.pathname === '/auth/logout') {
       // TODO: implement logout logic (clear session/cookie if used)
       return withCors(request, env, json({ ok: true, loggedOut: true }));
@@ -1135,6 +1151,7 @@ function configStatus(env: Env): JsonRecord {
     zohoMissing: missingZohoConfig(env),
     zohoAsapJwtSecret: Boolean(env.ZOHO_ASAP_JWT_SECRET),
     zohoHelpCenterJwtSecret: Boolean(env.ZOHO_HC_JWT_SECRET || env.ZOHO_ASAP_JWT_SECRET),
+    zohoHelpCenterJwtTerminalUrl: Boolean(env.ZOHO_HC_JWT_TERMINAL_URL),
     upmindContextSharedSecret: Boolean(env.UPMIND_CONTEXT_SHARED_SECRET),
     upmindSessionJwtSecret: Boolean(env.UPMIND_SESSION_JWT_SECRET),
     zohoWebhookJwtSecret: Boolean(env.ZDK_WEBHOOK_JWT_SECRET),
