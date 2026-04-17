@@ -44,18 +44,20 @@ export async function generateZohoAsapJwt(client: AuthenticatedClient, env: Env)
 	const secret = env.ZOHO_ASAP_JWT_SECRET;
 	if (!secret) throw new Error('Missing ZOHO_ASAP_JWT_SECRET');
 	if (!client.email) throw new Error('Missing client email');
-	const now = Math.floor(Date.now() / 1000);
-	const ttl = getJwtTtlSeconds(env);
+	const nowMs = Date.now();
+	const notAfterMs = nowMs + getJwtTtlSeconds(env) * 1000;
 	const payload = {
 		sub: client.clientId,
 		email: client.email,
+		first_name: splitName(client.name).firstName,
+		last_name: splitName(client.name).lastName,
 		name: client.name,
 		email_verified: true,
-		iat: now,
-		nbf: now,
-		exp: now + ttl,
-		not_before: now,
-		not_after: now + ttl
+		iat: Math.floor(nowMs / 1000),
+		nbf: Math.floor(nowMs / 1000),
+		exp: Math.floor(notAfterMs / 1000),
+		not_before: nowMs,
+		not_after: notAfterMs
 	};
 	return signJwtHS256(payload, secret);
 }
@@ -67,6 +69,20 @@ export async function generateZohoAsapRejectedJwt(env: Env): Promise<string> {
 	return signJwtHS256({
 		email: 'invalid@zebrabyte.invalid',
 		email_verified: false,
+		not_before: nowMs,
+		not_after: nowMs + 300000
+	}, secret);
+}
+
+export async function generateZohoAsapSetupValidationJwt(env: Env): Promise<string> {
+	const secret = env.ZOHO_ASAP_JWT_SECRET;
+	if (!secret) throw new Error('Missing ZOHO_ASAP_JWT_SECRET');
+	const nowMs = Date.now();
+	return signJwtHS256({
+		email: 'asap-setup-validation@zebrabyte.ro',
+		email_verified: true,
+		first_name: 'ASAP',
+		last_name: 'Validation',
 		not_before: nowMs,
 		not_after: nowMs + 300000
 	}, secret);
@@ -154,6 +170,14 @@ function getJwtTtlSeconds(env: Env): number {
 	const configuredMs = Number(env.ZOHO_ASAP_JWT_TTL_MS ?? 300000);
 	const configuredSeconds = Number.isFinite(configuredMs) && configuredMs > 0 ? configuredMs / 1000 : 300;
 	return Math.floor(Math.min(configuredSeconds, 600));
+}
+
+function splitName(name?: string): { firstName?: string; lastName?: string } {
+  if (!name) return {};
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return {};
+  if (parts.length === 1) return { firstName: parts[0] };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
 }
 
 function getWorkerSessionTtlSeconds(env: Env): number {

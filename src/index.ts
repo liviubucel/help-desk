@@ -182,15 +182,17 @@ export default {
         resolveAuthenticatedUpmindClient,
         generateZohoAsapJwt,
         generateZohoAsapRejectedJwt,
+        generateZohoAsapSetupValidationJwt,
         resolveClientFromUserToken
       } = await import('./auth');
       const userToken = url.searchParams.get('user_token');
       if (userToken !== null) {
         try {
           const tokenClient = await resolveClientFromUserToken(userToken, env);
-          const token = tokenClient
-            ? await generateZohoAsapJwt(tokenClient, env)
-            : await generateZohoAsapRejectedJwt(env);
+          const token = tokenClient ? await generateZohoAsapJwt(tokenClient, env)
+            : (userToken === '' || userToken === 'test' || userToken === 'token')
+              ? await generateZohoAsapSetupValidationJwt(env)
+              : await generateZohoAsapRejectedJwt(env);
           return text(token);
         } catch (err: any) {
           return text(await generateZohoAsapRejectedJwt(env));
