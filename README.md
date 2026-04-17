@@ -56,15 +56,20 @@ Upmind client-area template snippet:
 <script>
   window.ZBT_SUPPORT_CONTEXT = {
     clientId: "{{ client.id }}",
-    email: "{{ client.email|e('js') }}",
-    name: "{{ client.firstname|e('js') }} {{ client.lastname|e('js') }}",
+    email: "{{ client.login_email|e('js') }}",
+    name: "{{ client.first_name|e('js') }} {{ client.last_name|e('js') }}",
     issued: Date.now()
   };
 </script>
 <script src="https://help-desk.zebrabyte-uk.workers.dev/asap-bootstrap.js" defer></script>
 ```
 
-If Upmind uses different Twig variable names, keep the same JavaScript object keys and only change the Twig values.
+Upmind client-area variables used here:
+
+- `{{ client.id }}`
+- `{{ client.first_name }}`
+- `{{ client.last_name }}`
+- `{{ client.login_email }}`
 
 The Worker endpoint used by the bootstrap:
 

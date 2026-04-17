@@ -701,6 +701,12 @@ function extractUpmindClientId(payload: JsonRecord): string | undefined {
 function extractUpmindEmail(payload: JsonRecord): string | undefined {
   return firstNonEmpty([
     deepReadString(payload, ['data', 'email']),
+    deepReadString(payload, ['data', 'login_email']),
+    deepReadString(payload, ['data', 'notification_email']),
+    deepReadString(payload, ['data', 'client', 'login_email']),
+    deepReadString(payload, ['data', 'client', 'notification_email']),
+    deepReadString(payload, ['client', 'login_email']),
+    deepReadString(payload, ['client', 'notification_email']),
     deepReadString(payload, ['client_email']),
     deepReadString(payload, ['login_email']),
     deepReadString(payload, ['notification_email']),
@@ -713,7 +719,7 @@ function extractUpmindEmail(payload: JsonRecord): string | undefined {
     deepReadString(payload, ['data', 'customer', 'email']),
     deepReadString(payload, ['customer', 'email']),
     deepReadString(payload, ['email']),
-    recursiveFindString(payload, ['email'])
+    recursiveFindString(payload, ['email', 'login_email', 'notification_email'])
   ]);
 }
 
@@ -736,7 +742,10 @@ function extractUpmindFullName(payload: JsonRecord): string | undefined {
     deepReadString(payload, ['data', 'firstName']),
     deepReadString(payload, ['data', 'first_name']),
     deepReadString(payload, ['data', 'firstname']),
+    deepReadString(payload, ['data', 'client', 'first_name']),
+    deepReadString(payload, ['data', 'client', 'firstname']),
     deepReadString(payload, ['client', 'firstName']),
+    deepReadString(payload, ['client', 'first_name']),
     deepReadString(payload, ['client', 'firstname'])
   ]);
   const last = extractUpmindLastName(payload);
@@ -752,7 +761,9 @@ function extractUpmindLastName(payload: JsonRecord): string | undefined {
     deepReadString(payload, ['data', 'client', 'lastName']),
     deepReadString(payload, ['client', 'lastName']),
     deepReadString(payload, ['data', 'client', 'last_name']),
+    deepReadString(payload, ['data', 'client', 'lastname']),
     deepReadString(payload, ['client', 'last_name']),
+    deepReadString(payload, ['client', 'lastname']),
     deepReadString(payload, ['data', 'customer', 'lastName']),
     deepReadString(payload, ['customer', 'lastName']),
     deepReadString(payload, ['data', 'customer', 'last_name']),
