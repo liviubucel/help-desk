@@ -183,6 +183,7 @@ export default {
         generateZohoAsapJwt,
         generateZohoAsapRejectedJwt,
         generateZohoAsapSetupValidationJwt,
+        resolveSignedLaunchQuery,
         resolveClientFromUserToken
       } = await import('./auth');
       const userToken = url.searchParams.get('user_token');
@@ -199,7 +200,8 @@ export default {
         }
       }
 
-      const client = await resolveAuthenticatedUpmindClient(request, env);
+      const signedQueryClient = await resolveSignedLaunchQuery(request, env);
+      const client = signedQueryClient ?? await resolveAuthenticatedUpmindClient(request, env);
       if (!client) return withCors(request, env, json({ ok: false, error: 'Not authenticated' }, 401));
       try {
         const token = await generateZohoAsapJwt(client, env);
@@ -1820,16 +1822,37 @@ const SUPPORT_PAGE_HTML = `<!doctype html>
 const ASAP_BOOTSTRAP_JS = `(() => {
   const script = document.currentScript;
   const bridgeOrigin = script && script.src ? new URL(script.src).origin : window.location.origin;
+  const scriptContext = script && script.dataset ? script.dataset : {};
+  const windowContext = window.ZBT_SUPPORT_CONTEXT || {};
+  const handoff = {
+    client_id: scriptContext.clientId || windowContext.client_id || windowContext.clientId,
+    email: scriptContext.email || windowContext.email,
+    name: scriptContext.name || windowContext.name || '',
+    sig: scriptContext.sig || windowContext.sig
+  };
+  const hasSignedHandoff = Boolean(handoff.client_id && handoff.email && handoff.sig);
+  const toQuery = (params) => {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') search.set(key, value);
+    });
+    return search.toString();
+  };
+  const authQuery = hasSignedHandoff ? '?' + toQuery(handoff) : '';
   const fetchJson = (path) => fetch(bridgeOrigin + path, { credentials: 'include' }).then((response) => response.json());
 
-  fetchJson('/auth/upmind-client-context')
+  const ensureContext = hasSignedHandoff
+    ? fetchJson('/auth/upmind-launch' + authQuery + '&response=json')
+    : fetchJson('/auth/upmind-client-context');
+
+  ensureContext
     .then((ctx) => {
       if (!ctx || !ctx.authenticated) return;
 
       let used = false;
       const getJwtTokenCallback = async (success, failure) => {
         try {
-          const data = await fetchJson('/auth/asap-jwt');
+          const data = await fetchJson('/auth/asap-jwt' + authQuery);
           if (!data || !data.token) throw new Error('Missing token');
           success(data.token);
         } catch (error) {
