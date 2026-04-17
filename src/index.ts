@@ -73,6 +73,10 @@ export default {
       return javascript(ASAP_BOOTSTRAP_JS);
     }
 
+    if (request.method === 'GET' && url.pathname === '/support') {
+      return html(SUPPORT_PAGE_HTML);
+    }
+
     if (request.method === 'POST' && url.pathname === '/webhooks/upmind') {
       // Verify Upmind webhook signature
       const valid = await checkUpmindWebhookSignature(request.clone(), env);
@@ -103,11 +107,73 @@ export default {
 
     // --- AUTH ENDPOINTS ---
 
+    if (request.method === 'GET' && url.pathname === '/auth/upmind-launch') {
+      const {
+        createWorkerSessionCookie,
+        resolveAuthenticatedUpmindClientWithSource,
+        resolveSignedLaunchQuery
+      } = await import('./auth');
+      const queryClient = await resolveSignedLaunchQuery(request, env);
+      const resolved = queryClient
+        ? { authenticated: true as const, source: 'signed_launch_query' as const, client: queryClient }
+        : await resolveAuthenticatedUpmindClientWithSource(request, env);
+
+      if (!resolved.client) {
+        return withCors(request, env, json({
+          ok: false,
+          authenticated: false,
+          source: resolved.source ?? 'none',
+          error: 'Invalid or missing Upmind identity'
+        }, 401));
+      }
+
+      const cookie = await createWorkerSessionCookie(resolved.client, env);
+      console.log(JSON.stringify({
+        source: 'auth',
+        action: 'upmind-launch',
+        authenticated: true,
+        authSource: resolved.source,
+        clientId: resolved.client.clientId,
+        email: resolved.client.email
+      }));
+
+      const responseMode = url.searchParams.get('response') ?? url.searchParams.get('mode');
+      if (responseMode === 'json') {
+        const response = json({
+          ok: true,
+          authenticated: true,
+          source: resolved.source ?? 'none',
+          clientId: resolved.client.clientId,
+          email: resolved.client.email,
+          name: resolved.client.name
+        });
+        response.headers.append('set-cookie', cookie);
+        return withCors(request, env, response);
+      }
+
+      const redirectTo = sanitizeLocalRedirect(url.searchParams.get('redirect_to') ?? url.searchParams.get('redirect') ?? '/support');
+      const response = Response.redirect(new URL(redirectTo, url.origin).toString(), 302);
+      response.headers.append('set-cookie', cookie);
+      return withCors(request, env, response);
+    }
+
     if (request.method === 'GET' && url.pathname === '/auth/upmind-client-context') {
-      const { resolveAuthenticatedUpmindClient } = await import('./auth');
-      const client = await resolveAuthenticatedUpmindClient(request, env);
-      if (client) return withCors(request, env, json({ authenticated: true, ...client }));
-      else return withCors(request, env, json({ authenticated: false }));
+      const { resolveAuthenticatedUpmindClientWithSource } = await import('./auth');
+      const resolved = await resolveAuthenticatedUpmindClientWithSource(request, env);
+      if (resolved.client) {
+        return withCors(request, env, json({
+          authenticated: true,
+          source: resolved.source ?? 'none',
+          clientId: resolved.client.clientId,
+          email: resolved.client.email,
+          name: resolved.client.name
+        }));
+      }
+      return withCors(request, env, json({
+        authenticated: false,
+        source: resolved.source ?? 'none',
+        reason: resolved.reason ?? 'no valid identity source found'
+      }));
     }
 
 
@@ -166,8 +232,10 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/auth/logout') {
-      // TODO: implement logout logic (clear session/cookie if used)
-      return withCors(request, env, json({ ok: true, loggedOut: true }));
+      const { clearWorkerSessionCookie } = await import('./auth');
+      const response = json({ ok: true, loggedOut: true });
+      response.headers.append('set-cookie', clearWorkerSessionCookie(env));
+      return withCors(request, env, response);
     }
 
     // --- ADMIN/DEBUG/BACKFILL ENDPOINTS ---
@@ -1085,6 +1153,7 @@ async function zohoRequest(env: Env, method: string, path: string, body?: JsonRe
     headers: {
       'authorization': `Zoho-oauthtoken ${accessToken}`,
       'content-type': 'application/json',
+      ...(env.ZDK_ORG_ID ? { orgId: env.ZDK_ORG_ID } : {}),
       ...(env.ZDK_IGNORE_SOURCE_ID ? { sourceId: env.ZDK_IGNORE_SOURCE_ID } : {})
     },
     body: body ? JSON.stringify(stripUndefined(body)) : undefined
@@ -1154,6 +1223,9 @@ function configStatus(env: Env): JsonRecord {
     zohoHelpCenterJwtTerminalUrl: Boolean(env.ZOHO_HC_JWT_TERMINAL_URL),
     upmindContextSharedSecret: Boolean(env.UPMIND_CONTEXT_SHARED_SECRET),
     upmindSessionJwtSecret: Boolean(env.UPMIND_SESSION_JWT_SECRET),
+    workerSessionJwtSecret: Boolean(env.WORKER_SESSION_JWT_SECRET || env.UPMIND_CONTEXT_SHARED_SECRET),
+    workerSessionCookieName: Boolean(env.WORKER_SESSION_COOKIE_NAME),
+    workerSessionTtlSeconds: Boolean(env.WORKER_SESSION_TTL_SECONDS),
     zohoWebhookJwtSecret: Boolean(env.ZDK_WEBHOOK_JWT_SECRET),
     adminToken: Boolean(env.ADMIN_TOKEN)
   };
@@ -1640,6 +1712,15 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+function html(source: string): Response {
+  return new Response(source, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store'
+    }
+  });
+}
+
 function javascript(source: string): Response {
   return new Response(source, {
     headers: {
@@ -1647,6 +1728,11 @@ function javascript(source: string): Response {
       'cache-control': 'public, max-age=300'
     }
   });
+}
+
+function sanitizeLocalRedirect(value: string): string {
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/support';
+  return value;
 }
 
 function withCors(request: Request, env: Env, response: Response): Response {
@@ -1657,7 +1743,7 @@ function withCors(request: Request, env: Env, response: Response): Response {
   headers.set('access-control-allow-origin', origin);
   headers.set('access-control-allow-credentials', 'true');
   headers.set('access-control-allow-methods', 'GET,POST,OPTIONS');
-  headers.set('access-control-allow-headers', 'content-type, authorization, x-upmind-client-id, x-upmind-client-email, x-upmind-client-name, x-upmind-auth-signature');
+  headers.set('access-control-allow-headers', 'content-type, authorization, x-upmind-client-id, x-upmind-client-email, x-upmind-client-name, x-upmind-auth-signature, x-requested-with');
   headers.set('vary', 'Origin');
   return new Response(response.body, {
     status: response.status,
@@ -1675,8 +1761,30 @@ function isAllowedCorsOrigin(origin: string, env: Env): boolean {
       'https://help-desk.zebrabyte-uk.workers.dev'
     ];
 
-  return allowed.includes(origin);
+  return allowed.some((allowedOrigin) => {
+    if (allowedOrigin === origin) return true;
+    if (allowedOrigin.endsWith('/*')) {
+      return origin.startsWith(allowedOrigin.slice(0, -1));
+    }
+    return false;
+  });
 }
+
+const SUPPORT_PAGE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Support</title>
+</head>
+<body>
+  <main>
+    <h1>Support</h1>
+    <p>Loading your support session...</p>
+  </main>
+  <script src="/asap-bootstrap.js"></script>
+</body>
+</html>`;
 
 const ASAP_BOOTSTRAP_JS = `(() => {
   const script = document.currentScript;

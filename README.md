@@ -8,9 +8,89 @@ Production-ready bridge between Upmind and Zoho Desk, running on Cloudflare Work
 - **Failed events are tracked in the `event_failures` table** (see `migrations/0003_event_failures.sql`).
 - **Contact hydration fallback:** If contact info is missing, the worker fetches it from Upmind API before syncing to Zoho.
 - **Extractors support both legacy and cron/backfill key shapes** (e.g., `upmind_client_id`, `upmind_ticket_id`).
-- **Loop prevention** is enforced using `[bridge-origin:upmind]` and `[bridge-origin:zoho]` markers.
+- **Loop prevention** is enforced through D1 message mapping and Zoho `sourceId` / webhook `ignoreSourceId` support.
+- **Upmind-to-Zoho customer SSO** is handled by a Worker-owned secure session cookie created from a signed Upmind launch handoff.
 - **Admin endpoints**: `/admin/health`, `/admin/db-status`, `/admin/failures`, `/debug/raw-event/{eventKey}`, `/backfill/reprocess/{eventKey}`.
 - **Structured logging** for all major sync steps and errors (never logs secrets/tokens).
+
+## Upmind Customer SSO to Zoho ASAP and Help Center
+
+Upmind does not need to be a JWT identity provider. The Worker can act as the SSO broker:
+
+1. The customer logs into the Upmind client area.
+2. Upmind renders or links to the Worker launch URL:
+   - `GET /auth/upmind-launch?client_id=<UPMIND_CLIENT_ID>&email=<EMAIL>&name=<NAME>&sig=<HEX_HMAC>&redirect_to=/support`
+3. The Worker verifies `sig` with `UPMIND_CONTEXT_SHARED_SECRET`.
+4. If valid, the Worker issues its own short-lived secure session cookie:
+   - default cookie name: `ZBT_SUPPORT_SESSION`
+5. The support page loads `/asap-bootstrap.js`.
+6. The bootstrap calls `/auth/upmind-client-context` and `/auth/asap-jwt` with `credentials: include`.
+7. `/auth/asap-jwt` returns a Zoho ASAP JWT for the same Upmind customer identity.
+8. `/auth/helpcenter-jwt`, `/auth/helpcenter-launch`, and `/auth/helpcenter-jwt-redirect` use the same resolved identity for Help Center SSO.
+
+### Identity Resolution Order
+
+`resolveAuthenticatedUpmindClient()` checks identity sources in this production order:
+
+1. Signed Upmind headers:
+   - `X-Upmind-Client-Id`
+   - `X-Upmind-Client-Email`
+   - `X-Upmind-Client-Name`
+   - `X-Upmind-Auth-Signature`
+2. Upmind session JWT, if configured with `UPMIND_SESSION_JWT_SECRET`.
+3. Worker-owned session cookie created by `/auth/upmind-launch`.
+4. Dev query params only when `ALLOW_DEV_AUTH_CONTEXT === "true"`.
+
+`GET /auth/upmind-client-context` returns safe diagnostics:
+
+```json
+{
+  "authenticated": true,
+  "source": "worker_session",
+  "clientId": "123",
+  "email": "client@example.com",
+  "name": "Client Name"
+}
+```
+
+### Signed Launch URL
+
+Canonical string:
+
+```text
+${client_id}:${email}:${name ?? ''}
+```
+
+Signature:
+
+```text
+hex(hmac_sha256(UPMIND_CONTEXT_SHARED_SECRET, canonical_string))
+```
+
+Example:
+
+```text
+https://help-desk.zebrabyte-uk.workers.dev/auth/upmind-launch?client_id=12345&email=client%40example.com&name=Client%20Name&sig=<64-char-hex-hmac>&redirect_to=/support
+```
+
+For API/diagnostic launches, add `response=json`.
+
+### Required Env Vars for Customer SSO
+
+- `UPMIND_CONTEXT_SHARED_SECRET` — verifies signed Upmind launch params and signed headers.
+- `WORKER_SESSION_JWT_SECRET` — signs the Worker-owned session cookie. If omitted, the Worker falls back to `UPMIND_CONTEXT_SHARED_SECRET`.
+- `WORKER_SESSION_COOKIE_NAME` — optional, defaults to `ZBT_SUPPORT_SESSION`.
+- `WORKER_SESSION_TTL_SECONDS` — optional, defaults to `3600`, max `86400`.
+- `ZOHO_ASAP_JWT_SECRET` — signs Zoho ASAP JWTs.
+- `ZOHO_HC_JWT_SECRET` — signs Help Center JWTs. If omitted, `ZOHO_ASAP_JWT_SECRET` is used.
+- `ZOHO_HC_JWT_TERMINAL_URL` — Zoho Help Center JWT terminal URL, ending with `jwt=`.
+- `CORS_ALLOWED_ORIGINS` — comma-separated origins allowed to call auth endpoints with credentials, e.g. `https://portal.zebrabyte.ro,https://help-desk.zebrabyte-uk.workers.dev`.
+
+### Help Center Launch
+
+- `GET /auth/helpcenter-jwt` returns a token.
+- `GET /auth/helpcenter-launch` returns JSON with `{ token, launchUrl, email }`.
+- `GET /auth/helpcenter-jwt-redirect?return_to=/` redirects to the Zoho terminal login URL with a generated JWT.
 
 ## Endpoints
 - `/webhooks/upmind` — Upmind → Zoho sync

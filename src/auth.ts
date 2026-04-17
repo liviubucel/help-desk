@@ -7,6 +7,15 @@ export interface AuthenticatedClient {
 	name?: string;
 }
 
+export type AuthSource = 'signed_headers' | 'upmind_session_jwt' | 'worker_session' | 'dev_mode' | 'none';
+
+export interface AuthResolution {
+	authenticated: boolean;
+	source: AuthSource;
+	client?: AuthenticatedClient;
+	reason?: string;
+}
+
 // Helper to base64url encode a string or buffer
 function base64url(input: string | Uint8Array): string {
 	let str = typeof input === 'string' ? btoa(input) : btoa(String.fromCharCode(...input));
@@ -71,17 +80,86 @@ export async function generateZohoHelpCenterJwt(client: AuthenticatedClient, env
 	return signJwtHS256(payload, secret);
 }
 
+export async function createWorkerSessionCookie(client: AuthenticatedClient, env: Env): Promise<string> {
+  const secret = env.WORKER_SESSION_JWT_SECRET || env.UPMIND_CONTEXT_SHARED_SECRET;
+  if (!secret) throw new Error('Missing WORKER_SESSION_JWT_SECRET');
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = getWorkerSessionTtlSeconds(env);
+  const token = await signJwtHS256({
+    iss: 'zebrabyte-help-desk-worker',
+    aud: 'zoho-support-sso',
+    sub: client.clientId,
+    clientId: client.clientId,
+    email: client.email,
+    name: client.name,
+    iat: now,
+    nbf: now,
+    exp: now + ttl
+  }, secret);
+
+  const cookieName = env.WORKER_SESSION_COOKIE_NAME || 'ZBT_SUPPORT_SESSION';
+  return `${cookieName}=${encodeURIComponent(token)}; Max-Age=${ttl}; Path=/; HttpOnly; Secure; SameSite=None`;
+}
+
+export function clearWorkerSessionCookie(env: Env): string {
+  const cookieName = env.WORKER_SESSION_COOKIE_NAME || 'ZBT_SUPPORT_SESSION';
+  return `${cookieName}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=None`;
+}
+
+export async function resolveSignedLaunchQuery(request: Request, env: Env): Promise<AuthenticatedClient | null> {
+  const sharedSecret = env.UPMIND_CONTEXT_SHARED_SECRET;
+  if (!sharedSecret) return null;
+
+  const url = new URL(request.url);
+  const clientId = url.searchParams.get('client_id');
+  const email = url.searchParams.get('email');
+  const name = url.searchParams.get('name') ?? '';
+  const signature = url.searchParams.get('sig');
+  if (!clientId || !email || !signature) return null;
+
+  const canonical = `${clientId}:${email}:${name}`;
+  if (!(await verifyHexHmac(sharedSecret, canonical, signature))) return null;
+
+  return { clientId, email, name: name || undefined };
+}
+
 function getJwtTtlSeconds(env: Env): number {
 	const configuredMs = Number(env.ZOHO_ASAP_JWT_TTL_MS ?? 300000);
 	const configuredSeconds = Number.isFinite(configuredMs) && configuredMs > 0 ? configuredMs / 1000 : 300;
 	return Math.floor(Math.min(configuredSeconds, 600));
 }
 
+function getWorkerSessionTtlSeconds(env: Env): number {
+  const configured = Number(env.WORKER_SESSION_TTL_SECONDS ?? 3600);
+  if (!Number.isFinite(configured) || configured <= 0) return 3600;
+  return Math.floor(Math.min(configured, 86400));
+}
+
 /**
  * Pluggable resolver for authenticated Upmind client context
  */
 export async function resolveAuthenticatedUpmindClient(request: Request, env: Env): Promise<AuthenticatedClient | null> {
-  // Strategy A: Signed upstream header mode (reverse proxy injects headers)
+  const resolution = await resolveAuthenticatedUpmindClientWithSource(request, env);
+  return resolution.client ?? null;
+}
+
+export async function resolveAuthenticatedUpmindClientWithSource(request: Request, env: Env): Promise<AuthResolution> {
+  const headerClient = await resolveClientFromSignedHeaders(request, env);
+  if (headerClient) return logAuthResolution({ authenticated: true, source: 'signed_headers', client: headerClient });
+
+  const upmindJwtClient = await resolveClientFromUpmindJwt(request, env);
+  if (upmindJwtClient) return logAuthResolution({ authenticated: true, source: 'upmind_session_jwt', client: upmindJwtClient });
+
+  const workerSessionClient = await resolveClientFromWorkerSession(request, env);
+  if (workerSessionClient) return logAuthResolution({ authenticated: true, source: 'worker_session', client: workerSessionClient });
+
+  const devClient = resolveClientFromDevMode(request, env);
+  if (devClient) return logAuthResolution({ authenticated: true, source: 'dev_mode', client: devClient });
+
+  return logAuthResolution({ authenticated: false, source: 'none', reason: 'no valid identity source found' });
+}
+
+async function resolveClientFromSignedHeaders(request: Request, env: Env): Promise<AuthenticatedClient | null> {
   const clientId = request.headers.get('X-Upmind-Client-Id');
   const email = request.headers.get('X-Upmind-Client-Email');
   const name = request.headers.get('X-Upmind-Client-Name');
@@ -90,19 +168,16 @@ export async function resolveAuthenticatedUpmindClient(request: Request, env: En
   if (clientId && email && signature && sharedSecret) {
     // Canonical string: `${clientId}:${email}:${name ?? ''}`
     const canonical = `${clientId}:${email}:${name ?? ''}`;
-    const expected = await hmacSha256Hex(sharedSecret, canonical);
-    const sigBuf = new Uint8Array(signature.match(/.{1,2}/g)?.map(b => parseInt(b, 16)) ?? []);
-    const expBuf = new Uint8Array(expected.match(/.{1,2}/g)?.map(b => parseInt(b, 16)) ?? []);
-    if (sigBuf.length && expBuf.length && timingSafeEqual(sigBuf, expBuf)) {
+    if (await verifyHexHmac(sharedSecret, canonical, signature)) {
       return { clientId, email, name: name || undefined };
     }
     return null;
   }
 
-  const jwtClient = await resolveClientFromUpmindJwt(request, env);
-  if (jwtClient) return jwtClient;
+  return null;
+}
 
-  // Strategy B: Dev mode query param (explicit dev fallback)
+function resolveClientFromDevMode(request: Request, env: Env): AuthenticatedClient | null {
   if (env.ALLOW_DEV_AUTH_CONTEXT === 'true') {
     const url = new URL(request.url);
     const devClientId = url.searchParams.get('client_id');
@@ -113,7 +188,6 @@ export async function resolveAuthenticatedUpmindClient(request: Request, env: En
     }
   }
 
-  // Strategy C: Stub fallback
   return null;
 }
 
@@ -121,13 +195,31 @@ async function resolveClientFromUpmindJwt(request: Request, env: Env): Promise<A
   const secret = env.UPMIND_SESSION_JWT_SECRET;
   if (!secret) return null;
 
-  const token = readBearerToken(request, env) ?? readCookieToken(request, env);
+  const token = readBearerToken(request, env) ?? readCookieToken(request, env.UPMIND_SESSION_COOKIE_NAME || 'upmind_session');
   if (!token) return null;
 
   const payload = await verifyJwtHS256(token, secret);
   if (!payload) return null;
 
   const clientId = readClaim(payload, ['clientId', 'client_id', 'upmindClientId', 'upmind_client_id', 'sub']);
+  const email = readClaim(payload, ['email', 'clientEmail', 'client_email']);
+  const name = readClaim(payload, ['name', 'clientName', 'client_name']);
+  if (!clientId || !email) return null;
+
+  return { clientId, email, name };
+}
+
+async function resolveClientFromWorkerSession(request: Request, env: Env): Promise<AuthenticatedClient | null> {
+  const secret = env.WORKER_SESSION_JWT_SECRET || env.UPMIND_CONTEXT_SHARED_SECRET;
+  if (!secret) return null;
+
+  const token = readCookieToken(request, env.WORKER_SESSION_COOKIE_NAME || 'ZBT_SUPPORT_SESSION');
+  if (!token) return null;
+
+  const payload = await verifyJwtHS256(token, secret);
+  if (!payload) return null;
+
+  const clientId = readClaim(payload, ['clientId', 'client_id', 'sub']);
   const email = readClaim(payload, ['email', 'clientEmail', 'client_email']);
   const name = readClaim(payload, ['name', 'clientName', 'client_name']);
   if (!clientId || !email) return null;
@@ -142,8 +234,7 @@ function readBearerToken(request: Request, env: Env): string | undefined {
   return headerValue.replace(/^Bearer\s+/i, '').trim();
 }
 
-function readCookieToken(request: Request, env: Env): string | undefined {
-  const cookieName = env.UPMIND_SESSION_COOKIE_NAME || 'upmind_session';
+function readCookieToken(request: Request, cookieName: string): string | undefined {
   const cookieHeader = request.headers.get('cookie');
   if (!cookieHeader) return undefined;
 
@@ -153,6 +244,27 @@ function readCookieToken(request: Request, env: Env): string | undefined {
   }
 
   return undefined;
+}
+
+async function verifyHexHmac(secret: string, canonical: string, signature: string): Promise<boolean> {
+  const expected = await hmacSha256Hex(secret, canonical);
+  const normalizedSig = signature.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalizedSig)) return false;
+  const sigBuf = new Uint8Array(normalizedSig.match(/.{1,2}/g)?.map(b => parseInt(b, 16)) ?? []);
+  const expBuf = new Uint8Array(expected.match(/.{1,2}/g)?.map(b => parseInt(b, 16)) ?? []);
+  return sigBuf.length > 0 && expBuf.length > 0 && timingSafeEqual(sigBuf, expBuf);
+}
+
+function logAuthResolution(resolution: AuthResolution): AuthResolution {
+  console.log(JSON.stringify({
+    source: 'auth',
+    authenticated: resolution.authenticated,
+    authSource: resolution.source,
+    clientId: resolution.client?.clientId,
+    email: resolution.client?.email,
+    reason: resolution.reason
+  }));
+  return resolution;
 }
 
 async function verifyJwtHS256(token: string, secret: string): Promise<Record<string, unknown> | null> {
