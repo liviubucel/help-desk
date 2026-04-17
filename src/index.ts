@@ -178,11 +178,30 @@ export default {
 
 
     if (request.method === 'GET' && url.pathname === '/auth/asap-jwt') {
-      const { resolveAuthenticatedUpmindClient, generateZohoAsapJwt } = await import('./auth');
+      const {
+        resolveAuthenticatedUpmindClient,
+        generateZohoAsapJwt,
+        generateZohoAsapRejectedJwt,
+        resolveClientFromUserToken
+      } = await import('./auth');
+      const userToken = url.searchParams.get('user_token');
+      if (userToken !== null) {
+        try {
+          const tokenClient = await resolveClientFromUserToken(userToken, env);
+          const token = tokenClient
+            ? await generateZohoAsapJwt(tokenClient, env)
+            : await generateZohoAsapRejectedJwt(env);
+          return text(token);
+        } catch (err: any) {
+          return text(await generateZohoAsapRejectedJwt(env));
+        }
+      }
+
       const client = await resolveAuthenticatedUpmindClient(request, env);
       if (!client) return withCors(request, env, json({ ok: false, error: 'Not authenticated' }, 401));
       try {
         const token = await generateZohoAsapJwt(client, env);
+        if (url.searchParams.get('format') === 'plain') return withCors(request, env, text(token));
         return withCors(request, env, json({ token }));
       } catch (err: any) {
         return withCors(request, env, json({ ok: false, error: err.message || 'JWT error' }, 400));
@@ -1708,6 +1727,16 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: {
       'content-type': 'application/json; charset=utf-8'
+    }
+  });
+}
+
+function text(source: string, status = 200): Response {
+  return new Response(source, {
+    status,
+    headers: {
+      'content-type': 'text/plain; charset=utf-8',
+      'cache-control': 'no-store'
     }
   });
 }

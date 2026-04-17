@@ -60,6 +60,18 @@ export async function generateZohoAsapJwt(client: AuthenticatedClient, env: Env)
 	return signJwtHS256(payload, secret);
 }
 
+export async function generateZohoAsapRejectedJwt(env: Env): Promise<string> {
+	const secret = env.ZOHO_ASAP_JWT_SECRET;
+	if (!secret) throw new Error('Missing ZOHO_ASAP_JWT_SECRET');
+	const nowMs = Date.now();
+	return signJwtHS256({
+		email: 'invalid@zebrabyte.invalid',
+		email_verified: false,
+		not_before: nowMs,
+		not_after: nowMs + 300000
+	}, secret);
+}
+
 export async function generateZohoHelpCenterJwt(client: AuthenticatedClient, env: Env): Promise<string> {
 	const secret = env.ZOHO_HC_JWT_SECRET || env.ZOHO_ASAP_JWT_SECRET;
 	if (!secret) throw new Error('Missing ZOHO_HC_JWT_SECRET');
@@ -78,6 +90,21 @@ export async function generateZohoHelpCenterJwt(client: AuthenticatedClient, env
 		not_after: now + ttl
 	};
 	return signJwtHS256(payload, secret);
+}
+
+export async function resolveClientFromUserToken(userToken: string, env: Env): Promise<AuthenticatedClient | null> {
+  const secret = env.WORKER_SESSION_JWT_SECRET || env.UPMIND_CONTEXT_SHARED_SECRET;
+  if (!secret || !userToken) return null;
+
+  const payload = await verifyJwtHS256(userToken, secret);
+  if (!payload) return null;
+
+  const clientId = readClaim(payload, ['clientId', 'client_id', 'sub']);
+  const email = readClaim(payload, ['email', 'clientEmail', 'client_email']);
+  const name = readClaim(payload, ['name', 'clientName', 'client_name']);
+  if (!clientId || !email) return null;
+
+  return { clientId, email, name };
 }
 
 export async function createWorkerSessionCookie(client: AuthenticatedClient, env: Env): Promise<string> {
