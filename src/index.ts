@@ -755,7 +755,7 @@ export async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Pro
 async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<void> {
   const ticketId = extractUpmindTicketId(payload);
   const messageId = extractUpmindMessageId(payload);
-  const content = extractUpmindDescription(payload);
+  const content = formatUpmindToZohoMessage(payload);
 
   if (!ticketId || !messageId) return;
 
@@ -958,7 +958,7 @@ async function syncZohoReplyToUpmind(payload: JsonRecord, env: Env): Promise<voi
 
   let upmindMessageId: string | undefined;
   if (ticket.upmind_ticket_id && !ticket.upmind_ticket_id.startsWith('pending-') && hasUpmindConfig(env)) {
-    const content = htmlToText(extractZohoDescription(payload) ?? '');
+    const content = formatZohoToUpmindMessage(payload);
     if (!content) throw new Error(`Cannot sync Zoho reply ${zohoMessageId}: empty content`);
     const created = await upmindRequest(env, 'POST', `/tickets/${encodeURIComponent(ticket.upmind_ticket_id)}/messages`, {
       body: content,
@@ -1362,12 +1362,21 @@ function extractZohoContactId(payload: JsonRecord): string | undefined {
 }
 
 function extractZohoMessageId(payload: JsonRecord): string | undefined {
+  const looksLikeComment = Boolean(
+    deepReadString(payload, ['commentedTime']) ||
+    deepReadString(payload, ['commenter', 'type']) ||
+    deepReadString(payload, ['content']) ||
+    deepReadString(payload, ['threadId']) ||
+    deepReadString(payload, ['commentId'])
+  );
+
   let id = firstNonEmpty([
     deepReadString(payload, ['data', 'threadId']),
     deepReadString(payload, ['threadId']),
     deepReadString(payload, ['data', 'commentId']),
     deepReadString(payload, ['commentId']),
-    recursiveFindString(payload, ['threadId', 'thread_id', 'commentId', 'comment_id', 'messageId', 'message_id', 'id'])
+    recursiveFindString(payload, ['threadId', 'thread_id', 'commentId', 'comment_id', 'messageId', 'message_id']),
+    looksLikeComment ? deepReadString(payload, ['id']) : undefined
   ]);
   // If not found, try nested fields (e.g., Ticket_Thread_Add: payload.thread.id, payload.comment.id)
   if (!id && payload.thread && typeof payload.thread === 'object' && 'id' in payload.thread) {
@@ -1379,7 +1388,7 @@ function extractZohoMessageId(payload: JsonRecord): string | undefined {
   // If still not found, try to look for id in the original raw payload shape
   if (!id && Array.isArray(payload.value) && payload.value[0] && payload.value[0].payload) {
     const nested = payload.value[0].payload;
-    id = readString(nested.threadId) || readString(nested.commentId) || readString(nested.messageId) || readString(nested.id);
+    id = readString(nested.threadId) || readString(nested.commentId) || readString(nested.messageId) || (looksLikeComment ? readString(nested.id) : undefined);
     if (!id && nested.thread && typeof nested.thread === 'object') {
       id = readString(nested.thread.id);
     }
@@ -1462,6 +1471,81 @@ function htmlToText(value: string): string {
     .replace(/&#39;/g, "'")
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function formatUpmindToZohoMessage(payload: JsonRecord): string {
+  const raw = extractUpmindDescription(payload) ?? '';
+  const content = raw.trim();
+  if (!content) return '';
+
+  const actorType = firstNonEmpty([
+    deepReadString(payload, ['actor_type']),
+    deepReadString(payload, ['object', 'source_type'])
+  ]) ?? 'client';
+  const actorName = firstNonEmpty([
+    deepReadString(payload, ['object', 'actor_name']),
+    deepReadString(payload, ['object', 'client_name']),
+    deepReadString(payload, ['object', 'ticket', 'client', 'full_name']),
+    deepReadString(payload, ['object', 'ticket', 'client', 'fullname']),
+    deepReadString(payload, ['object', 'ticket', 'client', 'email'])
+  ]) ?? 'Client';
+  const sourceLabel = actorType.toLowerCase().includes('staff') || actorType.toLowerCase().includes('user')
+    ? 'Upmind Support'
+    : 'Upmind Client';
+
+  const ticketLink = firstNonEmpty([
+    deepReadString(payload, ['links', 'ticket', 'admin_view']),
+    deepReadString(payload, ['links', 'ticket', 'view']),
+    deepReadString(payload, ['object', 'ticket', 'web_url'])
+  ]);
+  const ticketReference = firstNonEmpty([
+    deepReadString(payload, ['object', 'ticket', 'reference']),
+    deepReadString(payload, ['ticket', 'reference'])
+  ]);
+
+  const linkLine = ticketLink
+    ? ticketReference
+      ? `\n\nView Ticket (${ticketReference}): ${ticketLink}`
+      : `\n\nView Ticket: ${ticketLink}`
+    : '';
+
+  return `[${sourceLabel}: ${actorName}] ${content}${linkLine}\n[bridge-origin:upmind]`;
+}
+
+function formatZohoToUpmindMessage(payload: JsonRecord): string {
+  const raw = htmlToText(extractZohoDescription(payload) ?? '');
+  const content = raw.trim();
+  if (!content) return '';
+
+  const commenterType = firstNonEmpty([
+    deepReadString(payload, ['commenter', 'type']),
+    deepReadString(payload, ['source', 'type'])
+  ]) ?? 'AGENT';
+  const commenterName = firstNonEmpty([
+    deepReadString(payload, ['commenter', 'name']),
+    [deepReadString(payload, ['commenter', 'firstName']), deepReadString(payload, ['commenter', 'lastName'])].filter(Boolean).join(' ').trim(),
+    deepReadString(payload, ['assignee', 'email']),
+    'Support'
+  ]) ?? 'Support';
+  const sourceLabel = commenterType.toUpperCase() === 'AGENT' ? 'Zoho Support' : 'Zoho';
+
+  const ticketLink = firstNonEmpty([
+    deepReadString(payload, ['webUrl']),
+    deepReadString(payload, ['ticket', 'webUrl'])
+  ]);
+  const ticketNumber = firstNonEmpty([
+    deepReadString(payload, ['ticketNumber']),
+    deepReadString(payload, ['ticket', 'ticketNumber']),
+    deepReadString(payload, ['ticketId'])
+  ]);
+
+  const linkLine = ticketLink
+    ? ticketNumber
+      ? `\n\nView Ticket (${ticketNumber}): ${ticketLink}`
+      : `\n\nView Ticket: ${ticketLink}`
+    : '';
+
+  return `[${sourceLabel}: ${commenterName}] ${content}${linkLine}\n[bridge-origin:zoho]`;
 }
 
 function recursiveFindString(value: unknown, keys: string[], depth = 0): string | undefined {
