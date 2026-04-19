@@ -64,6 +64,16 @@ export default {
       return json({ ok: true, webhook: 'upmind', validation: true, config: configStatus(env) });
     }
 
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/webhooks/zoho') {
+      return json({
+        ok: true,
+        webhook: 'zoho',
+        validation: true,
+        mode: 'accepted-only',
+        note: 'Zoho webhooks are accepted for validation but Zoho-to-Upmind sync is disabled.'
+      });
+    }
+
     if (request.method === 'GET' && url.pathname === '/asap-bootstrap.js') {
       return javascript(ASAP_BOOTSTRAP_JS);
     }
@@ -79,6 +89,23 @@ export default {
         return json({ ok: false, error: 'Invalid Upmind webhook signature' }, 401);
       }
       return handleUpmindWebhook(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/webhooks/zoho') {
+      const payload = await readPayload(request);
+      console.log(JSON.stringify({
+        source: 'zoho',
+        action: 'ignored-webhook',
+        keys: Object.keys(payload).slice(0, 20),
+        preview: previewPayload(payload)
+      }));
+      return json({
+        ok: true,
+        webhook: 'zoho',
+        accepted: true,
+        ignored: true,
+        reason: 'Zoho-to-Upmind sync is disabled'
+      });
     }
 
     // --- AUTH ENDPOINTS ---
