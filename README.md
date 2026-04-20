@@ -1,29 +1,93 @@
 # help-desk
 
-Cloudflare Worker bridge for one purpose:
+Cloudflare Worker bridge between Upmind and Zoho Desk.
 
-- sync Upmind clients to Zoho Desk contacts
-- let an authenticated Upmind client log in to Zoho Desk support with an Upmind session JWT
-- let an Upmind client-area handoff log in to Zoho Desk ASAP after server-side Upmind API validation
+Upmind is treated as the identity/account/billing source of truth. Zoho Desk is treated as the operational helpdesk source of truth.
 
-Everything else is intentionally out of scope: no Zoho-to-Upmind sync, no ticket/message sync, no signed handoff URLs, no Worker-owned session cookie, and no dev auth context.
+The Worker supports:
+
+- Upmind client identity to Zoho Desk contact sync
+- Upmind session or server-verified handoff to Zoho ASAP JWT
+- Upmind session to Zoho Help Center JWT
+- Upmind ticket webhooks to Zoho Desk tickets
+- Upmind ticket message webhooks to Zoho Desk comments
+- Zoho webhook ingestion with safe reverse-sync-disabled auditing unless writable Upmind ticket API endpoints are configured
+
+## Architecture
+
+The app is intentionally split into small modules:
+
+- `src/index.ts`: Worker router only
+- `src/upmind/normalize.ts`: normalizes nested Upmind payloads
+- `src/upmind/webhooks.ts`: Upmind webhook verification, storage, dedupe, dispatch
+- `src/upmind/write-adapter.ts`: optional Zoho-to-Upmind write adapter
+- `src/zoho/client.ts`: Zoho Desk API client
+- `src/zoho/contacts.ts`: contact search/create/update
+- `src/zoho/tickets.ts`: ticket create/update/comment helpers
+- `src/sync/contacts.ts`: contact resolution and mapping
+- `src/sync/tickets.ts`: Upmind ticket to Zoho ticket sync
+- `src/sync/messages.ts`: Upmind message to Zoho comment sync
+- `src/db.ts`: runtime schema guard, event storage, audit helpers
+
+## Important Limit
+
+Upmind public webhook documentation confirms outbound event notifications for clients, tickets, and ticket messages. Full Zoho to Upmind write-back must only be enabled if you have confirmed writable Upmind ticket API endpoints for replies, statuses, and internal notes.
+
+Without those endpoints, this bridge accepts Zoho webhooks and records that reverse sync is disabled. It does not fake bidirectional sync.
+
+## Upmind Payload Mapping
+
+Requester email is extracted in this order:
+
+```text
+object.ticket.client.email
+object.ticket.client.login_email
+object.ticket.client.notification_email
+object.client.email
+client.email
+email
+```
+
+Requester name is extracted from:
+
+```text
+object.ticket.client.fullname
+object.ticket.client.full_name
+object.ticket.client.firstname + object.ticket.client.lastname
+object.client_name
+object.actor_name
+```
+
+Ticket ids are extracted from:
+
+```text
+object.ticket_id
+object.ticket.id
+ticket_id
+ticket.id
+```
+
+Message ids and body are extracted from:
+
+```text
+object.id
+object.body
+object.content
+```
 
 ## Auth Flow
 
-Upmind remains the identity source. There are two supported modes.
-
 ### Mode A: Upmind JWT
 
-1. The customer logs in to Upmind.
-2. Upmind provides a short-lived JWT for that customer.
-3. The support page passes that token to this Worker as:
-   - `Authorization: Bearer <UPMIND_JWT>`
-   - or `?user_token=<UPMIND_JWT>`
-   - or cookie `upmind_session=<UPMIND_JWT>` unless `UPMIND_SESSION_COOKIE_NAME` is configured.
-4. The Worker verifies the JWT with `UPMIND_SESSION_JWT_SECRET`.
-5. The Worker returns a Zoho ASAP or Help Center JWT for the same customer identity.
+The customer logs in to Upmind and the support page passes a short-lived Upmind JWT to this Worker via:
 
-The Upmind JWT must contain:
+```text
+Authorization: Bearer <UPMIND_JWT>
+?user_token=<UPMIND_JWT>
+cookie upmind_session=<UPMIND_JWT>
+```
+
+The JWT must contain:
 
 ```json
 {
@@ -34,23 +98,9 @@ The Upmind JWT must contain:
 }
 ```
 
-Accepted client id claims: `clientId`, `client_id`, `upmindClientId`, `upmind_client_id`, `sub`.
-
-Accepted email claims: `email`, `clientEmail`, `client_email`.
-
-Accepted name claims: `name`, `clientName`, `client_name`.
-
 ### Mode B: Upmind API Handoff
 
-Use this when Upmind does not issue client JWTs. The Upmind client area must render the logged-in client id and email into the page, then this Worker verifies those values against the Upmind API before issuing the Zoho JWT.
-
-Worker domain currently used by this project:
-
-```text
-https://help-desk.zebrabyte-uk.workers.dev
-```
-
-Upmind client-area template snippet:
+Use this when Upmind does not issue client JWTs. The Upmind client area renders the logged-in client context, then the Worker verifies it server-side against the Upmind API before issuing a Zoho JWT.
 
 ```html
 <script>
@@ -64,95 +114,155 @@ Upmind client-area template snippet:
 <script src="https://help-desk.zebrabyte-uk.workers.dev/asap-bootstrap.js" defer></script>
 ```
 
-Upmind client-area variables used here:
+Handoff payloads older than 10 minutes are rejected.
 
-- `{{ client.id }}`
-- `{{ client.first_name }}`
-- `{{ client.last_name }}`
-- `{{ client.login_email }}`
+## Endpoints
 
-The Worker endpoint used by the bootstrap:
+Public:
 
-- `POST /auth/upmind-api-client-context`
-- `POST /auth/asap-jwt`
+```text
+GET /health
+GET /support
+GET /asap-bootstrap.js
+GET /webhooks/upmind
+POST /webhooks/upmind
+GET /webhooks/zoho
+POST /webhooks/zoho
+```
 
-Both endpoints:
+Auth:
 
-- require the request origin to match `CORS_ALLOWED_ORIGINS`
-- validate `clientId` and `email` through `UPMIND_API_BASE_URL` + `UPMIND_API_TOKEN`
-- reject stale handoffs when `issued` or `timestamp` is older than 10 minutes
-- sync the client to Zoho Desk before returning the Zoho JWT
+```text
+GET /auth/upmind-client-context
+POST /auth/upmind-client-context
+POST /auth/upmind-api-client-context
+GET /auth/asap-jwt
+POST /auth/asap-jwt
+GET /auth/asap-jwt-legacy
+POST /auth/asap-jwt-legacy
+GET /auth/helpcenter-jwt
+GET /auth/helpcenter-launch
+GET /auth/helpcenter-jwt-redirect
+GET /auth/logout
+```
 
-## Auth Endpoints
+Admin:
 
-- `GET /auth/upmind-client-context` verifies the Upmind JWT and returns safe client context.
-- `GET /auth/asap-jwt` verifies the Upmind JWT and returns `{ "token": "<ZOHO_JWT>" }`.
-- `GET /auth/asap-jwt?format=plain` returns the Zoho JWT as plain text.
-- `POST /auth/upmind-api-client-context` validates an Upmind client handoff through the Upmind API.
-- `POST /auth/asap-jwt` validates an Upmind client handoff through the Upmind API and returns `{ "token": "<ZOHO_JWT>" }`.
-- `GET /auth/helpcenter-jwt` returns a Help Center JWT.
-- `GET /auth/helpcenter-launch` returns `{ token, launchUrl, email }`.
-- `GET /auth/helpcenter-jwt-redirect?return_to=/` redirects to the configured Zoho JWT terminal URL.
+```text
+POST /cron/sync
+GET /admin/health
+GET /admin/db-status
+GET /admin/failures
+GET /debug/raw-event/{eventKey}
+POST /backfill/reprocess/{eventKey}
+```
 
-## Client Sync
-
-`POST /webhooks/upmind` receives Upmind webhooks, verifies the Upmind webhook signature, extracts the client id and email, and creates or updates the matching Zoho Desk contact.
-
-The maintenance sync only retries pending contact rows from `contact_map`. Tickets and messages are not synced.
-
-## Admin Endpoints
-
-- `GET /health`
-- `POST /cron/sync`
-- `GET /admin/health`
-- `GET /admin/db-status`
-- `GET /admin/failures`
-- `GET /debug/raw-event/{eventKey}`
-- `POST /backfill/reprocess/{eventKey}`
-
-Admin/debug/backfill endpoints require `ADMIN_TOKEN`.
+Admin endpoints require `ADMIN_TOKEN` through `x-admin-token` or `Authorization: Bearer`.
 
 ## Required Environment Variables
 
-- `BRIDGE_DB`
-- `UPMIND_WEBHOOK_SECRET`
-- `UPMIND_SESSION_JWT_SECRET`
-- `ZOHO_ASAP_JWT_SECRET`
-- `ZOHO_CLIENT_ID`
-- `ZOHO_CLIENT_SECRET`
-- `ZOHO_REFRESH_TOKEN`
-- `ZDK_DEPARTMENT_ID`
-- `ADMIN_TOKEN`
+Core:
 
-Optional:
+```text
+BRIDGE_DB
+ADMIN_TOKEN
+CORS_ALLOWED_ORIGINS
+```
 
-- `UPMIND_CLIENT_ENDPOINT_TEMPLATE`, defaults to `/clients/{clientId}`
-- `UPMIND_SESSION_COOKIE_NAME`
-- `UPMIND_SESSION_AUTH_HEADER`
-- `UPMIND_WEBHOOK_SIGNATURE_HEADER`
-- `ALLOW_INSECURE_WEBHOOKS`
-- `UPMIND_API_BASE_URL`
-- `UPMIND_API_TOKEN`
-- `ZDK_BASE_URL`
-- `ZDK_ORG_ID`
-- `ZOHO_ACCOUNTS_URL`
-- `ZOHO_HC_JWT_SECRET`
-- `ZOHO_HC_JWT_TERMINAL_URL`
-- `ZOHO_HELP_CENTER_URL`
-- `ZOHO_ASAP_JWT_TTL_MS`
-- `CORS_ALLOWED_ORIGINS`
+Upmind:
 
-## Zoho OAuth Token Management
+```text
+UPMIND_WEBHOOK_SECRET
+UPMIND_WEBHOOK_SIGNATURE_HEADER
+ALLOW_INSECURE_WEBHOOKS
+UPMIND_API_BASE_URL
+UPMIND_API_TOKEN
+UPMIND_CLIENT_ENDPOINT_TEMPLATE
+UPMIND_SESSION_JWT_SECRET
+UPMIND_SESSION_COOKIE_NAME
+UPMIND_SESSION_AUTH_HEADER
+```
 
-Zoho Desk API calls use OAuth refresh tokens. The access token is cached in D1 in `oauth_tokens` and refreshed automatically when needed.
+Zoho:
 
-Run migrations in `migrations/` before deploying.
+```text
+ZOHO_CLIENT_ID
+ZOHO_CLIENT_SECRET
+ZOHO_REFRESH_TOKEN
+ZOHO_ACCOUNTS_URL
+ZDK_BASE_URL
+ZDK_ORG_ID
+ZDK_DEPARTMENT_ID
+ZDK_IGNORE_SOURCE_ID
+ZOHO_ASAP_JWT_SECRET
+ZOHO_HC_JWT_SECRET
+ZOHO_HC_JWT_TERMINAL_URL
+ZOHO_HELP_CENTER_URL
+ZOHO_ASAP_JWT_TTL_MS
+```
+
+Optional reverse sync:
+
+```text
+UPMIND_TICKET_WRITE_ENABLED
+UPMIND_TICKET_WRITE_API_BASE_URL
+UPMIND_TICKET_WRITE_API_TOKEN
+```
+
+Status override:
+
+```text
+STATUS_MAP_JSON
+```
+
+## Status Mapping
+
+Default Upmind to Zoho mapping:
+
+```json
+{
+  "client_opened_new_ticket_hook": "Open",
+  "lead_opened_new_ticket_hook": "Open",
+  "staff_opened_new_ticket_hook": "Open",
+  "ticket_client_replied_hook": "Open",
+  "client_posted_ticket_message_hook": "Open",
+  "ticket_in_progress_hook": "In Progress",
+  "ticket_waiting_response_hook": "Waiting on Customer",
+  "ticket_closed_hook": "Closed",
+  "client_closed_ticket_hook": "Closed",
+  "staff_closed_ticket_hook": "Closed",
+  "ticket_reopened_hook": "Open",
+  "scheduled_ticket_reopened_hook": "Open"
+}
+```
 
 ## Development
 
 ```sh
 npm run dev
-npm run deploy
+npm exec tsc -- --noEmit
 npm run db:migrate:local
 npm run db:migrate:remote
+npm run deploy
 ```
+
+## Deployment Checklist
+
+1. Configure Zoho OAuth and `ZDK_ORG_ID`.
+2. Configure `ZDK_DEPARTMENT_ID`.
+3. Configure Zoho ASAP JWT secret.
+4. Configure Help Center JWT secret and terminal URL if using Help Center SSO.
+5. Configure Upmind webhook URL:
+
+```text
+https://help-desk.zebrabyte-uk.workers.dev/webhooks/upmind
+```
+
+6. Enable Upmind client, ticket, and ticket message triggers.
+7. Configure Upmind API verification variables for browser handoff auth.
+8. Run D1 migrations.
+9. Deploy Worker.
+10. Send a test client webhook and verify `contact_map`.
+11. Send a test ticket webhook and verify `ticket_map`.
+12. Send a test ticket message webhook and verify `message_map`.
+13. Send duplicate webhook payload and verify no duplicate ticket/comment is created.
