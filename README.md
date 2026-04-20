@@ -143,6 +143,7 @@ POST /auth/asap-jwt-legacy
 GET /auth/helpcenter-jwt
 GET /auth/helpcenter-launch
 GET /auth/helpcenter-jwt-redirect
+GET /auth/helpcenter-login
 GET /auth/logout
 ```
 
@@ -181,6 +182,25 @@ UPMIND_CLIENT_ENDPOINT_TEMPLATE
 UPMIND_SESSION_JWT_SECRET
 UPMIND_SESSION_COOKIE_NAME
 UPMIND_SESSION_AUTH_HEADER
+UPMIND_LOGIN_URL
+```
+
+For Zoho Desk Help Center JWT, set the Zoho "Remote Login URL" to:
+
+```text
+https://help-desk.zebrabyte-uk.workers.dev/auth/helpcenter-login
+```
+
+Set the Zoho "Remote Logout URL" to:
+
+```text
+https://help-desk.zebrabyte-uk.workers.dev/auth/logout
+```
+
+Set `ZOHO_HC_JWT_TERMINAL_URL` to the terminal URL shown in Zoho, for example:
+
+```text
+https://help.zebrabyte.ro/accounts/p/8-30039159786/signin/jwt/auth?return_to=&jwt=
 ```
 
 Zoho:

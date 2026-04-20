@@ -6,6 +6,7 @@ export function configStatus(env: Env): JsonRecord {
 		upmindApiToken: Boolean(env.UPMIND_API_TOKEN),
 		upmindWebhookSecret: Boolean(env.UPMIND_WEBHOOK_SECRET),
 		upmindSessionJwtSecret: Boolean(env.UPMIND_SESSION_JWT_SECRET),
+		upmindLoginUrl: Boolean(env.UPMIND_LOGIN_URL),
 		zohoBaseUrl: Boolean(env.ZDK_BASE_URL),
 		zohoClientId: Boolean(env.ZOHO_CLIENT_ID),
 		zohoClientSecret: Boolean(env.ZOHO_CLIENT_SECRET),
@@ -24,4 +25,3 @@ export function requireZohoConfig(env: Env): void {
 		.filter((key) => !env[key as keyof Env]);
 	if (missing.length > 0) throw new Error(`Missing Zoho config: ${missing.join(', ')}`);
 }
-

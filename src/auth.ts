@@ -92,18 +92,20 @@ export async function generateZohoHelpCenterJwt(client: AuthenticatedClient, env
 	const secret = env.ZOHO_HC_JWT_SECRET || env.ZOHO_ASAP_JWT_SECRET;
 	if (!secret) throw new Error('Missing ZOHO_HC_JWT_SECRET');
 	if (!client.email) throw new Error('Missing client email');
-	const now = Math.floor(Date.now() / 1000);
-	const ttl = getJwtTtlSeconds(env);
+	const nowMs = Date.now();
+	const notAfterMs = nowMs + getJwtTtlSeconds(env) * 1000;
 	const payload = {
 		sub: client.clientId,
 		email: client.email,
+		first_name: splitName(client.name).firstName,
+		last_name: splitName(client.name).lastName,
 		name: client.name,
 		email_verified: true,
-		iat: now,
-		nbf: now,
-		exp: now + ttl,
-		not_before: now,
-		not_after: now + ttl
+		iat: Math.floor(nowMs / 1000),
+		nbf: Math.floor(nowMs / 1000),
+		exp: Math.floor(notAfterMs / 1000),
+		not_before: nowMs,
+		not_after: notAfterMs
 	};
 	return signJwtHS256(payload, secret);
 }

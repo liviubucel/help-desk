@@ -66,6 +66,10 @@ export default {
 			return withCors(request, env, await handleHelpCenterRedirect(request, env));
 		}
 
+		if (request.method === 'GET' && url.pathname === '/auth/helpcenter-login') {
+			return withCors(request, env, await handleHelpCenterLogin(request, env));
+		}
+
 		if (request.method === 'GET' && url.pathname === '/auth/logout') {
 			const returnTo = sanitizeLocalRedirect(url.searchParams.get('return_to') || '/support');
 			return Response.redirect(returnTo, 302);
@@ -114,7 +118,7 @@ async function handleUpmindClientContext(request: Request, env: Env): Promise<Re
 			? await resolveClientFromUpmindApiHandoff(request, env)
 			: await resolveAuthenticatedUpmindClient(request, env);
 		if (!client) return json({ authenticated: false, reason: 'No valid Upmind identity' }, 401);
-		await resolveOrCreateContact(env, toNormalizedClient(client));
+		await tryResolveOrCreateContact(env, toNormalizedClient(client));
 		return json({ authenticated: true, clientId: client.clientId, email: client.email, name: client.name });
 	} catch (error) {
 		return json({ authenticated: false, error: String(error) }, 401);
@@ -127,7 +131,7 @@ async function handleAsapJwt(request: Request, env: Env, legacy: boolean): Promi
 			? await resolveClientFromUpmindApiHandoff(request, env)
 			: await resolveAuthenticatedUpmindClient(request, env);
 		if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
-		await resolveOrCreateContact(env, toNormalizedClient(client));
+		await tryResolveOrCreateContact(env, toNormalizedClient(client));
 		const token = await generateZohoAsapJwt(client, env);
 		const url = new URL(request.url);
 		if (legacy || url.searchParams.get('format') === 'plain' || url.searchParams.has('user_token')) return text(token);
@@ -140,16 +144,17 @@ async function handleAsapJwt(request: Request, env: Env, legacy: boolean): Promi
 async function handleHelpCenterJwt(request: Request, env: Env): Promise<Response> {
 	const client = await resolveAuthenticatedUpmindClient(request, env);
 	if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
-	await resolveOrCreateContact(env, toNormalizedClient(client));
+	await tryResolveOrCreateContact(env, toNormalizedClient(client));
 	return json({ token: await generateZohoHelpCenterJwt(client, env) });
 }
 
 async function handleHelpCenterLaunch(request: Request, env: Env): Promise<Response> {
 	const client = await resolveAuthenticatedUpmindClient(request, env);
 	if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
-	await resolveOrCreateContact(env, toNormalizedClient(client));
+	await tryResolveOrCreateContact(env, toNormalizedClient(client));
 	const token = await generateZohoHelpCenterJwt(client, env);
-	const launchUrl = env.ZOHO_HELP_CENTER_URL ? `${env.ZOHO_HELP_CENTER_URL}?jwt=${encodeURIComponent(token)}` : undefined;
+	const returnTo = new URL(request.url).searchParams.get('return_to') || '';
+	const launchUrl = env.ZOHO_HC_JWT_TERMINAL_URL ? buildZohoJwtTerminalUrl(env.ZOHO_HC_JWT_TERMINAL_URL, token, returnTo) : undefined;
 	return json({ token, launchUrl, email: client.email });
 }
 
@@ -157,10 +162,31 @@ async function handleHelpCenterRedirect(request: Request, env: Env): Promise<Res
 	const client = await resolveAuthenticatedUpmindClient(request, env);
 	if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
 	if (!env.ZOHO_HC_JWT_TERMINAL_URL) return json({ ok: false, error: 'Missing ZOHO_HC_JWT_TERMINAL_URL' }, 400);
-	await resolveOrCreateContact(env, toNormalizedClient(client));
+	await tryResolveOrCreateContact(env, toNormalizedClient(client));
 	const token = await generateZohoHelpCenterJwt(client, env);
 	const returnTo = new URL(request.url).searchParams.get('return_to') || '/';
-	return Response.redirect(`${env.ZOHO_HC_JWT_TERMINAL_URL}${encodeURIComponent(token)}&return_to=${encodeURIComponent(returnTo)}`, 302);
+	return Response.redirect(buildZohoJwtTerminalUrl(env.ZOHO_HC_JWT_TERMINAL_URL, token, returnTo), 302);
+}
+
+async function handleHelpCenterLogin(request: Request, env: Env): Promise<Response> {
+	const url = new URL(request.url);
+	const returnTo = url.searchParams.get('return_to') || '';
+	const client = await resolveAuthenticatedUpmindClient(request, env);
+	if (client) {
+		if (!env.ZOHO_HC_JWT_TERMINAL_URL) return json({ ok: false, error: 'Missing ZOHO_HC_JWT_TERMINAL_URL' }, 400);
+		await tryResolveOrCreateContact(env, toNormalizedClient(client));
+		const token = await generateZohoHelpCenterJwt(client, env);
+		return Response.redirect(buildZohoJwtTerminalUrl(env.ZOHO_HC_JWT_TERMINAL_URL, token, returnTo), 302);
+	}
+
+	const callback = new URL(request.url);
+	callback.pathname = '/auth/helpcenter-login';
+	callback.search = '';
+	if (returnTo) callback.searchParams.set('return_to', returnTo);
+
+	const loginUrl = new URL(env.UPMIND_LOGIN_URL || 'https://portal.zebrabyte.ro/login');
+	loginUrl.searchParams.set('return_to', callback.toString());
+	return Response.redirect(loginUrl.toString(), 302);
 }
 
 async function resolveClientFromUpmindApiHandoff(request: Request, env: Env): Promise<{ clientId: string; email: string; name?: string }> {
@@ -209,6 +235,20 @@ function toNormalizedClient(client: { clientId: string; email: string; name?: st
 	};
 }
 
+async function tryResolveOrCreateContact(env: Env, client: NormalizedClient): Promise<void> {
+	try {
+		await resolveOrCreateContact(env, client);
+	} catch (error) {
+		console.log(JSON.stringify({
+			source: 'auth-contact-sync',
+			ok: false,
+			clientId: client.id,
+			email: client.email,
+			error: String(error)
+		}));
+	}
+}
+
 async function runMaintenanceSync(env: Env): Promise<JsonRecord> {
 	const cron = await handleCronSync(env);
 	const retry = await retryFailedEvents(env);
@@ -240,6 +280,13 @@ async function reprocessRawEvent(env: Env, eventKey: string): Promise<Response> 
 function sanitizeLocalRedirect(value: string): string {
 	if (!value || !value.startsWith('/') || value.startsWith('//')) return '/support';
 	return value;
+}
+
+function buildZohoJwtTerminalUrl(terminalUrl: string, jwt: string, returnTo: string): string {
+	const url = new URL(terminalUrl);
+	url.searchParams.set('jwt', jwt);
+	url.searchParams.set('return_to', returnTo);
+	return url.toString();
 }
 
 const SUPPORT_PAGE_HTML = `<!doctype html>
