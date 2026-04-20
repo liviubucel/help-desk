@@ -350,6 +350,8 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
   await ensureSchema(env);
   const payload = await readPayload(request);
   let clientId: string | undefined = extractUpmindClientId(payload);
+  let ticketId: string | undefined = extractUpmindTicketId(payload);
+  let messageId: string | undefined = extractUpmindMessageId(payload);
   const eventName = normalizeEventName(firstNonEmpty([
     readString(payload.hook_code),
     readString(payload.hook_category),
@@ -370,6 +372,8 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
     eventName,
     eventKey,
     clientId,
+    ticketId,
+    messageId,
     keys: Object.keys(payload).slice(0, 20),
     preview: previewPayload(payload)
   }));
@@ -381,7 +385,11 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
   await storeRawEvent(env, 'upmind', eventName, eventKey, payload);
 
   try {
-    if (clientId || extractUpmindEmail(payload)) {
+    if (messageId && ticketId) {
+      await syncUpmindMessageToZoho({ ...payload, bridge_origin: 'upmind' }, env);
+    } else if (ticketId) {
+      await syncUpmindTicketToZoho({ ...payload, bridge_origin: 'upmind' }, env);
+    } else if (clientId || extractUpmindEmail(payload)) {
       await syncUpmindClientToZoho({ ...payload, bridge_origin: 'upmind' }, env);
     }
   } catch (error) {
@@ -398,7 +406,7 @@ async function handleUpmindWebhook(request: Request, env: Env): Promise<Response
 
   await markProcessed(env, eventKey, 'upmind');
 
-  return json({ ok: true, source: 'upmind', eventName, eventKey, clientId, sync: 'client-only' });
+  return json({ ok: true, source: 'upmind', eventName, eventKey, clientId, ticketId, messageId });
 }
 
 async function ensureSchema(env: Env): Promise<void> {
@@ -410,6 +418,30 @@ async function ensureSchema(env: Env): Promise<void> {
       email TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS ticket_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      upmind_ticket_id TEXT UNIQUE,
+      zoho_ticket_id TEXT UNIQUE,
+      upmind_client_id TEXT,
+      zoho_contact_id TEXT,
+      last_status TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
+  await env.BRIDGE_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS message_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      upmind_message_id TEXT UNIQUE,
+      zoho_message_id TEXT UNIQUE,
+      ticket_map_id INTEGER,
+      origin_system TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `).run();
 
@@ -458,6 +490,8 @@ async function ensureSchema(env: Env): Promise<void> {
   `).run();
 
   await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_contact_map_email ON contact_map(email)').run();
+  await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_ticket_map_upmind_client_id ON ticket_map(upmind_client_id)').run();
+  await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_ticket_map_id ON message_map(ticket_map_id)').run();
   await env.BRIDGE_DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_tokens_provider ON oauth_tokens(provider)').run();
   await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_event_failures_event_key ON event_failures(event_key)').run();
   await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_event_failures_origin_system ON event_failures(origin_system)').run();
@@ -522,6 +556,104 @@ export async function syncUpmindClientToZoho(payload: JsonRecord, env: Env): Pro
        email = excluded.email,
        updated_at = CURRENT_TIMESTAMP`
   ).bind(clientId, zohoContactId, email).run();
+}
+
+export async function syncUpmindTicketToZoho(payload: JsonRecord, env: Env): Promise<void> {
+  const ticketId = extractUpmindTicketId(payload);
+  const clientId = extractUpmindClientId(payload);
+  const email = extractUpmindEmail(payload);
+  const subject = extractUpmindSubject(payload) ?? `Upmind ticket ${ticketId ?? 'unknown'}`;
+  const description = extractUpmindDescription(payload) ?? 'Imported from Upmind webhook';
+
+  if (!ticketId) return;
+
+  if (clientId || email) {
+    await syncUpmindClientToZoho({ ...payload, upmind_client_id: clientId, email }, env);
+  }
+
+  const existing = await env.BRIDGE_DB.prepare(
+    'SELECT zoho_ticket_id FROM ticket_map WHERE upmind_ticket_id = ?1 LIMIT 1'
+  ).bind(ticketId).first<{ zoho_ticket_id?: string }>();
+
+  let zohoTicketId = existing?.zoho_ticket_id;
+  let zohoContactId = (clientId || email)
+    ? (await env.BRIDGE_DB.prepare(
+      'SELECT zoho_contact_id FROM contact_map WHERE upmind_client_id = ?1 OR email = ?2 LIMIT 1'
+    ).bind(clientId ?? null, email ?? null).first<{ zoho_contact_id?: string }>())?.zoho_contact_id
+    : undefined;
+
+  if ((!zohoTicketId || zohoTicketId.startsWith('pending-')) && hasZohoConfig(env)) {
+    const body: JsonRecord = {
+      subject,
+      departmentId: env.ZDK_DEPARTMENT_ID,
+      description,
+      status: 'Open'
+    };
+
+    if (zohoContactId && !zohoContactId.startsWith('pending-')) {
+      body.contactId = zohoContactId;
+    }
+    if (email) {
+      body.email = email;
+    }
+
+    const created = await zohoRequest(env, 'POST', '/tickets', body);
+    zohoTicketId = readString(created.id) ?? deepReadString(created, ['data', 'id']) ?? readZohoIdFromArray(created.data);
+  } else if (!hasZohoConfig(env)) {
+    console.log(JSON.stringify({ source: 'zoho-api', skipped: true, reason: 'missing-config', missing: missingZohoConfig(env) }));
+  }
+
+  zohoTicketId = zohoTicketId ?? `pending-zoho-ticket-${ticketId}`;
+
+  await env.BRIDGE_DB.prepare(
+    `INSERT INTO ticket_map (upmind_ticket_id, zoho_ticket_id, upmind_client_id, zoho_contact_id, last_status, updated_at)
+     VALUES (?1, ?2, ?3, ?4, 'Open', CURRENT_TIMESTAMP)
+     ON CONFLICT(upmind_ticket_id) DO UPDATE SET
+       zoho_ticket_id = excluded.zoho_ticket_id,
+       upmind_client_id = COALESCE(excluded.upmind_client_id, ticket_map.upmind_client_id),
+       zoho_contact_id = COALESCE(excluded.zoho_contact_id, ticket_map.zoho_contact_id),
+       last_status = excluded.last_status,
+       updated_at = CURRENT_TIMESTAMP`
+  ).bind(ticketId, zohoTicketId, clientId ?? null, zohoContactId && !zohoContactId.startsWith('pending-') ? zohoContactId : null).run();
+}
+
+async function syncUpmindMessageToZoho(payload: JsonRecord, env: Env): Promise<void> {
+  const ticketId = extractUpmindTicketId(payload);
+  const messageId = extractUpmindMessageId(payload);
+  const content = extractUpmindDescription(payload);
+
+  if (!ticketId || !messageId) return;
+
+  const existingMessage = await env.BRIDGE_DB.prepare(
+    'SELECT zoho_message_id FROM message_map WHERE upmind_message_id = ?1 LIMIT 1'
+  ).bind(messageId).first<{ zoho_message_id?: string }>();
+  if (existingMessage?.zoho_message_id && !existingMessage.zoho_message_id.startsWith('pending-')) return;
+
+  await syncUpmindTicketToZoho(payload, env);
+
+  const ticket = await env.BRIDGE_DB.prepare(
+    'SELECT id, zoho_ticket_id FROM ticket_map WHERE upmind_ticket_id = ?1 LIMIT 1'
+  ).bind(ticketId).first<{ id: number; zoho_ticket_id?: string }>();
+
+  if (!ticket?.zoho_ticket_id || ticket.zoho_ticket_id.startsWith('pending-')) {
+    throw new Error(`Cannot sync Upmind message ${messageId}: missing Zoho ticket for Upmind ticket ${ticketId}`);
+  }
+
+  let zohoMessageId: string | undefined;
+  if (content && hasZohoConfig(env)) {
+    const created = await zohoRequest(env, 'POST', `/tickets/${ticket.zoho_ticket_id}/comments`, {
+      content,
+      isPublic: true
+    });
+    zohoMessageId = readString(created.id) ?? deepReadString(created, ['data', 'id']) ?? readZohoIdFromArray(created.data);
+  }
+
+  await env.BRIDGE_DB.prepare(
+    `INSERT INTO message_map (upmind_message_id, zoho_message_id, ticket_map_id, origin_system)
+     VALUES (?1, ?2, ?3, 'upmind')
+     ON CONFLICT(upmind_message_id) DO UPDATE SET
+       zoho_message_id = COALESCE(excluded.zoho_message_id, message_map.zoho_message_id)`
+  ).bind(messageId, zohoMessageId ?? `pending-zoho-message-${messageId}`, ticket.id).run();
 }
 
 async function zohoRequest(env: Env, method: string, path: string, body?: JsonRecord): Promise<JsonRecord> {
@@ -710,6 +842,33 @@ function readZohoIdFromArray(value: unknown): string | undefined {
   return readStringLike(first.id);
 }
 
+function extractUpmindTicketId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['upmind_ticket_id']),
+    deepReadString(payload, ['ticket_id']),
+    deepReadString(payload, ['ticketId']),
+    deepReadString(payload, ['object', 'ticket_id']),
+    deepReadString(payload, ['object', 'ticketId']),
+    deepReadString(payload, ['object', 'ticket', 'id']),
+    deepReadString(payload, ['data', 'ticket', 'id']),
+    deepReadString(payload, ['ticket', 'id']),
+    recursiveFindString(payload, ['upmind_ticket_id', 'ticketId', 'ticket_id'])
+  ]);
+}
+
+function extractUpmindMessageId(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['upmind_message_id']),
+    deepReadString(payload, ['message_id']),
+    deepReadString(payload, ['messageId']),
+    deepReadString(payload, ['object_id']),
+    deepReadString(payload, ['object', 'id']),
+    deepReadString(payload, ['data', 'message', 'id']),
+    deepReadString(payload, ['message', 'id']),
+    recursiveFindString(payload, ['upmind_message_id', 'messageId', 'message_id'])
+  ]);
+}
+
 function extractUpmindClientId(payload: JsonRecord): string | undefined {
   return firstNonEmpty([
     deepReadString(payload, ['upmind_client_id']),
@@ -777,6 +936,33 @@ function extractUpmindFullName(payload: JsonRecord): string | undefined {
   ]);
   const last = extractUpmindLastName(payload);
   return [first, last].filter(Boolean).join(' ') || undefined;
+}
+
+function extractUpmindSubject(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['object', 'ticket', 'subject']),
+    deepReadString(payload, ['data', 'ticket', 'subject']),
+    deepReadString(payload, ['ticket', 'subject']),
+    deepReadString(payload, ['subject']),
+    recursiveFindString(payload, ['subject', 'title'])
+  ]);
+}
+
+function extractUpmindDescription(payload: JsonRecord): string | undefined {
+  return firstNonEmpty([
+    deepReadString(payload, ['object', 'body']),
+    deepReadString(payload, ['object', 'content']),
+    deepReadString(payload, ['object', 'message']),
+    deepReadString(payload, ['object', 'ticket', 'subject']),
+    deepReadString(payload, ['data', 'message', 'body']),
+    deepReadString(payload, ['data', 'message', 'content']),
+    deepReadString(payload, ['message', 'body']),
+    deepReadString(payload, ['message', 'content']),
+    deepReadString(payload, ['body']),
+    deepReadString(payload, ['content']),
+    deepReadString(payload, ['description']),
+    recursiveFindString(payload, ['body', 'content', 'message', 'description'])
+  ]);
 }
 
 function extractUpmindLastName(payload: JsonRecord): string | undefined {
