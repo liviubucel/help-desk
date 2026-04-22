@@ -21,6 +21,14 @@
 	};
 	const authQuery = upmindJwt ? `?user_token=${encodeURIComponent(upmindJwt)}` : '';
 	const upmindAccessToken = readTokenFromStorage();
+	const status = window.ZBT_ASAP_BRIDGE_STATUS = {
+		host: window.location.hostname,
+		path: window.location.pathname,
+		tokenFound: Boolean(upmindAccessToken),
+		contextAuthenticated: false,
+		loginAttempted: false,
+		loginSucceeded: false
+	};
 	const authHeaders = upmindAccessToken ? { authorization: `Bearer ${upmindAccessToken}` } : {};
 	const fetchJson = (path) => fetch(`${bridgeOrigin}${path}`, { credentials: 'include', headers: authHeaders }).then(r => r.json());
 	const postJson = (path, body) => fetch(`${bridgeOrigin}${path}`, {
@@ -35,18 +43,27 @@
 	const ctx = await (hasClientHandoff
 		? postJson('/auth/upmind-api-client-context', upmindClient)
 		: fetchJson(`/auth/upmind-client-context${authQuery}`)
-	).catch(() => null);
+	).catch((error) => {
+		status.contextError = String(error);
+		return null;
+	});
+	status.context = ctx;
+	status.contextAuthenticated = Boolean(ctx?.authenticated);
 	if (!ctx?.authenticated) return;
 
 	let used = false;
 	const getJwtTokenCallback = async (success, failure) => {
+		status.loginAttempted = true;
 		try {
 			const data = hasClientHandoff
 				? await postJson('/auth/asap-jwt', upmindClient)
 				: await fetchJson(`/auth/asap-jwt${authQuery}`);
 			if (!data?.token) throw new Error('Missing token');
+			status.jwtReceived = true;
 			success(data.token);
+			status.loginSucceeded = true;
 		} catch (err) {
+			status.loginError = String(err);
 			failure(err);
 		}
 	};
@@ -99,10 +116,20 @@
 		if (/^[A-Za-z0-9._~+/-]{20,}$/.test(value)) return value;
 		try {
 			const parsed = JSON.parse(value);
-			const token = parsed && (parsed.access_token || parsed.accessToken || parsed.token || parsed.id_token);
-			return typeof token === 'string' ? token.replace(/^Bearer\s+/i, '') : null;
+			return findTokenInObject(parsed);
 		} catch {
 			return null;
 		}
+	}
+
+	function findTokenInObject(value) {
+		if (!value || typeof value !== 'object') return null;
+		const direct = value.access_token || value.accessToken || value.token || value.id_token || value.jwt;
+		if (typeof direct === 'string') return direct.replace(/^Bearer\s+/i, '');
+		for (const key in value) {
+			const nested = findTokenInObject(value[key]);
+			if (nested) return nested;
+		}
+		return null;
 	}
 })();
