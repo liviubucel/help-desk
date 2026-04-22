@@ -44,6 +44,7 @@ export default {
 		if (request.method === 'POST' && url.pathname === '/webhooks/zoho') return handleZohoWebhook(request, env);
 
 		if (request.method === 'GET' && url.pathname === '/asap-bootstrap.js') return javascript(buildAsapBootstrap(env));
+		if (request.method === 'GET' && url.pathname === '/zoho-asap.js') return fetchZohoAsapScript(env);
 		if (request.method === 'GET' && url.pathname === '/support') return html(SUPPORT_PAGE_HTML);
 
 		if ((request.method === 'GET' || request.method === 'POST') && (url.pathname === '/auth/upmind-client-context' || url.pathname === '/auth/upmind-api-client-context')) {
@@ -146,6 +147,21 @@ async function handleHelpCenterJwt(request: Request, env: Env): Promise<Response
 	if (!client) return json({ ok: false, error: 'Not authenticated' }, 401);
 	await tryResolveOrCreateContact(env, toNormalizedClient(client));
 	return json({ token: await generateZohoHelpCenterJwt(client, env) });
+}
+
+async function fetchZohoAsapScript(env: Env): Promise<Response> {
+	if (!env.ZOHO_ASAP_SCRIPT_URL) return text('Missing ZOHO_ASAP_SCRIPT_URL', 404);
+	const upstream = await fetch(env.ZOHO_ASAP_SCRIPT_URL, {
+		headers: { accept: 'application/javascript,text/javascript,*/*' }
+	});
+	const body = await upstream.text();
+	return new Response(body, {
+		status: upstream.status,
+		headers: {
+			'content-type': upstream.headers.get('content-type') || 'application/javascript; charset=utf-8',
+			'cache-control': upstream.ok ? 'public, max-age=300' : 'no-store'
+		}
+	});
 }
 
 async function handleHelpCenterLaunch(request: Request, env: Env): Promise<Response> {
@@ -307,7 +323,6 @@ const SUPPORT_PAGE_HTML = `<!doctype html>
 </html>`;
 
 function buildAsapBootstrap(env: Env): string {
-	const zohoAsapScriptUrl = JSON.stringify(env.ZOHO_ASAP_SCRIPT_URL || '');
 	const allowedHosts = JSON.stringify(splitEnvList(env.ZOHO_ASAP_ALLOWED_HOSTS));
 	const blockedHosts = JSON.stringify(splitEnvList(env.ZOHO_ASAP_BLOCKED_HOSTS));
 	const allowedPaths = JSON.stringify(splitEnvList(env.ZOHO_ASAP_ALLOWED_PATHS));
@@ -317,12 +332,12 @@ function buildAsapBootstrap(env: Env): string {
   const bridgeOrigin = script && script.src ? new URL(script.src).origin : window.location.origin;
   const scriptContext = script && script.dataset ? script.dataset : {};
   const windowContext = window.ZBT_SUPPORT_CONTEXT || {};
-  const zohoAsapScriptUrl = ${zohoAsapScriptUrl};
+  const zohoAsapScriptUrl = bridgeOrigin + '/zoho-asap.js';
   const allowedHosts = ${allowedHosts};
   const blockedHosts = ${blockedHosts};
   const allowedPaths = ${allowedPaths};
   const blockedPaths = ${blockedPaths};
-  if (!zohoAsapScriptUrl || !isWidgetAllowed()) return;
+  if (!isWidgetAllowed()) return;
   const upmindJwt = scriptContext.upmindJwt || windowContext.upmindJwt || windowContext.user_token || windowContext.userToken;
   const tokenKeys = window.ZBT_UPMIND_TOKEN_KEYS || [
     'access_token',

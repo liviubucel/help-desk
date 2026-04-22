@@ -3,10 +3,7 @@
 	const bridgeOrigin = script?.src ? new URL(script.src).origin : window.location.origin;
 	const scriptContext = script?.dataset || {};
 	const windowContext = window.ZBT_SUPPORT_CONTEXT || {};
-	const zohoAsapScriptUrl = scriptContext.zohoAsapScriptUrl
-		|| windowContext.zohoAsapScriptUrl
-		|| window.ZBT_ZOHO_ASAP_SCRIPT_URL
-		|| '';
+	const zohoAsapScriptUrl = `${bridgeOrigin}/zoho-asap.js`;
 	if (!zohoAsapScriptUrl) return;
 	const upmindJwt = scriptContext.upmindJwt || windowContext.upmindJwt || windowContext.user_token || windowContext.userToken;
 	const tokenKeys = window.ZBT_UPMIND_TOKEN_KEYS || [
