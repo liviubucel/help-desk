@@ -1,5 +1,6 @@
 import { hmacSha256Hex, timingSafeEqual } from './utils/crypto';
 import type { Env } from './types';
+import { extractClientFromUpmindApiResponse } from './upmind/api';
 
 export interface AuthenticatedClient {
 	clientId: string;
@@ -7,7 +8,7 @@ export interface AuthenticatedClient {
 	name?: string;
 }
 
-export type AuthSource = 'upmind_session_jwt' | 'upmind_api' | 'none';
+export type AuthSource = 'upmind_session_jwt' | 'upmind_access_token' | 'upmind_api' | 'none';
 
 export interface AuthResolution {
 	authenticated: boolean;
@@ -136,7 +137,10 @@ export async function resolveAuthenticatedUpmindClientWithSource(request: Reques
   const upmindJwtClient = await resolveClientFromUpmindJwt(request, env);
   if (upmindJwtClient) return logAuthResolution({ authenticated: true, source: 'upmind_session_jwt', client: upmindJwtClient });
 
-  return logAuthResolution({ authenticated: false, source: 'none', reason: 'missing or invalid Upmind JWT' });
+  const accessTokenClient = await resolveClientFromUpmindAccessToken(request, env);
+  if (accessTokenClient) return logAuthResolution({ authenticated: true, source: 'upmind_access_token', client: accessTokenClient });
+
+  return logAuthResolution({ authenticated: false, source: 'none', reason: 'missing or invalid Upmind identity' });
 }
 
 async function resolveClientFromUpmindJwt(request: Request, env: Env): Promise<AuthenticatedClient | null> {
@@ -164,6 +168,48 @@ function readBearerToken(request: Request, env: Env): string | undefined {
   const headerValue = configuredHeader ? request.headers.get(configuredHeader) : request.headers.get('authorization');
   if (!headerValue) return undefined;
   return headerValue.replace(/^Bearer\s+/i, '').trim();
+}
+
+async function resolveClientFromUpmindAccessToken(request: Request, env: Env): Promise<AuthenticatedClient | null> {
+  const token = readUpmindAccessToken(request);
+  if (!token) return null;
+
+  const baseUrl = (env.UPMIND_API_BASE_URL || 'https://api.upmind.io/api').replace(/\/$/, '');
+  const endpoint = env.UPMIND_ME_ENDPOINT || '/clients/me';
+  const url = endpoint.startsWith('http://') || endpoint.startsWith('https://')
+    ? endpoint
+    : `${baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+
+  const response = await fetch(url, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json'
+    }
+  });
+  if (!response.ok) return null;
+
+  const raw = await response.json().catch(() => null);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+  const client = extractClientFromUpmindApiResponse(raw as Record<string, unknown>);
+  if (!client.id || !client.email) return null;
+
+  return {
+    clientId: client.id,
+    email: client.email,
+    name: client.fullName || [client.firstName, client.lastName].filter(Boolean).join(' ') || undefined
+  };
+}
+
+function readUpmindAccessToken(request: Request): string | undefined {
+  const auth = request.headers.get('authorization');
+  if (auth?.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+
+  const headerToken = request.headers.get('x-upmind-access-token');
+  if (headerToken) return headerToken.trim();
+
+  const urlToken = new URL(request.url).searchParams.get('upmind_access_token');
+  return urlToken?.trim() || undefined;
 }
 
 function readCookieToken(request: Request, cookieName: string): string | undefined {

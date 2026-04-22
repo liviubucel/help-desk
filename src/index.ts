@@ -311,6 +311,13 @@ const ASAP_BOOTSTRAP_JS = `(() => {
   const scriptContext = script && script.dataset ? script.dataset : {};
   const windowContext = window.ZBT_SUPPORT_CONTEXT || {};
   const upmindJwt = scriptContext.upmindJwt || windowContext.upmindJwt || windowContext.user_token || windowContext.userToken;
+  const tokenKeys = window.ZBT_UPMIND_TOKEN_KEYS || [
+    'access_token',
+    'upmind_access_token',
+    'upmind.auth.token',
+    'auth._token.local',
+    'auth.token'
+  ];
   const upmindClient = {
     clientId: scriptContext.clientId || windowContext.clientId || windowContext.client_id || windowContext.uid,
     email: scriptContext.email || windowContext.email,
@@ -318,7 +325,9 @@ const ASAP_BOOTSTRAP_JS = `(() => {
     issued: Number(scriptContext.issued || windowContext.issued || Date.now())
   };
   const authQuery = upmindJwt ? '?user_token=' + encodeURIComponent(upmindJwt) : '';
-  const fetchJson = (path) => fetch(bridgeOrigin + path, { credentials: 'include' }).then((response) => response.json());
+  const upmindAccessToken = readTokenFromStorage();
+  const authHeaders = upmindAccessToken ? { authorization: 'Bearer ' + upmindAccessToken } : {};
+  const fetchJson = (path) => fetch(bridgeOrigin + path, { credentials: 'include', headers: authHeaders }).then((response) => response.json());
   const postJson = (path, body) => fetch(bridgeOrigin + path, {
     method: 'POST',
     credentials: 'include',
@@ -344,4 +353,35 @@ const ASAP_BOOTSTRAP_JS = `(() => {
       ZohoDeskAsap.invoke('login', getJwtTokenCallback);
     });
   }).catch(() => {});
+
+  function readTokenFromStorage() {
+    const stores = [window.localStorage, window.sessionStorage];
+    for (const storage of stores) {
+      try {
+        for (const key of tokenKeys) {
+          const token = extractToken(storage.getItem(key));
+          if (token) return token;
+        }
+        for (let i = 0; i < storage.length; i++) {
+          const key = storage.key(i);
+          const token = key ? extractToken(storage.getItem(key)) : null;
+          if (token) return token;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function extractToken(value) {
+    if (!value) return null;
+    if (value.indexOf('Bearer ') === 0) return value.slice(7);
+    if (/^[A-Za-z0-9._~+/-]{20,}$/.test(value)) return value;
+    try {
+      const parsed = JSON.parse(value);
+      const token = parsed && (parsed.access_token || parsed.accessToken || parsed.token || parsed.id_token);
+      return typeof token === 'string' ? token.replace(/^Bearer\\s+/i, '') : null;
+    } catch (_) {
+      return null;
+    }
+  }
 })();`;

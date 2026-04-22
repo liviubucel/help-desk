@@ -4,6 +4,7 @@ export function configStatus(env: Env): JsonRecord {
 	return {
 		upmindApiBaseUrl: Boolean(env.UPMIND_API_BASE_URL),
 		upmindApiToken: Boolean(env.UPMIND_API_TOKEN),
+		upmindMeEndpoint: Boolean(env.UPMIND_ME_ENDPOINT),
 		upmindWebhookSecret: Boolean(env.UPMIND_WEBHOOK_SECRET),
 		upmindSessionJwtSecret: Boolean(env.UPMIND_SESSION_JWT_SECRET),
 		upmindLoginUrl: Boolean(env.UPMIND_LOGIN_URL),

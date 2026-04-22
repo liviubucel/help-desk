@@ -26,6 +26,8 @@ export function extractClientFromUpmindApiResponse(payload: JsonRecord): Normali
 		deepReadString(payload, ['first_name']),
 		deepReadString(payload, ['data', 'firstname']),
 		deepReadString(payload, ['data', 'first_name']),
+		deepReadString(payload, ['data', 'data', 'firstname']),
+		deepReadString(payload, ['data', 'data', 'first_name']),
 		deepReadString(payload, ['client', 'firstname']),
 		deepReadString(payload, ['client', 'first_name'])
 	]);
@@ -34,6 +36,8 @@ export function extractClientFromUpmindApiResponse(payload: JsonRecord): Normali
 		deepReadString(payload, ['last_name']),
 		deepReadString(payload, ['data', 'lastname']),
 		deepReadString(payload, ['data', 'last_name']),
+		deepReadString(payload, ['data', 'data', 'lastname']),
+		deepReadString(payload, ['data', 'data', 'last_name']),
 		deepReadString(payload, ['client', 'lastname']),
 		deepReadString(payload, ['client', 'last_name'])
 	]);
@@ -41,6 +45,7 @@ export function extractClientFromUpmindApiResponse(payload: JsonRecord): Normali
 		id: firstNonEmpty([
 			deepReadString(payload, ['id']),
 			deepReadString(payload, ['data', 'id']),
+			deepReadString(payload, ['data', 'data', 'id']),
 			deepReadString(payload, ['client', 'id'])
 		]),
 		email: firstNonEmpty([
@@ -49,6 +54,8 @@ export function extractClientFromUpmindApiResponse(payload: JsonRecord): Normali
 			deepReadString(payload, ['notification_email']),
 			deepReadString(payload, ['data', 'email']),
 			deepReadString(payload, ['data', 'login_email']),
+			deepReadString(payload, ['data', 'data', 'email']),
+			deepReadString(payload, ['data', 'data', 'login_email']),
 			deepReadString(payload, ['client', 'email']),
 			deepReadString(payload, ['client', 'login_email'])
 		]),
@@ -59,8 +66,9 @@ export function extractClientFromUpmindApiResponse(payload: JsonRecord): Normali
 			deepReadString(payload, ['full_name']),
 			deepReadString(payload, ['data', 'fullname']),
 			deepReadString(payload, ['data', 'full_name']),
+			deepReadString(payload, ['data', 'data', 'fullname']),
+			deepReadString(payload, ['data', 'data', 'full_name']),
 			[firstName, lastName].filter(Boolean).join(' ') || undefined
 		])
 	};
 }
-
