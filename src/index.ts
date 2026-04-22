@@ -43,7 +43,7 @@ export default {
 		if (request.method === 'POST' && url.pathname === '/webhooks/upmind') return handleUpmindWebhook(request, env);
 		if (request.method === 'POST' && url.pathname === '/webhooks/zoho') return handleZohoWebhook(request, env);
 
-		if (request.method === 'GET' && url.pathname === '/asap-bootstrap.js') return javascript(ASAP_BOOTSTRAP_JS);
+		if (request.method === 'GET' && url.pathname === '/asap-bootstrap.js') return javascript(buildAsapBootstrap(env));
 		if (request.method === 'GET' && url.pathname === '/support') return html(SUPPORT_PAGE_HTML);
 
 		if ((request.method === 'GET' || request.method === 'POST') && (url.pathname === '/auth/upmind-client-context' || url.pathname === '/auth/upmind-api-client-context')) {
@@ -306,11 +306,14 @@ const SUPPORT_PAGE_HTML = `<!doctype html>
 </body>
 </html>`;
 
-const ASAP_BOOTSTRAP_JS = `(() => {
+function buildAsapBootstrap(env: Env): string {
+	const zohoAsapScriptUrl = JSON.stringify(env.ZOHO_ASAP_SCRIPT_URL || 'https://desk.zoho.eu/portal/api/web/asapApp/202686000000628009?orgId=20111269432');
+	return `(() => {
   const script = document.currentScript;
   const bridgeOrigin = script && script.src ? new URL(script.src).origin : window.location.origin;
   const scriptContext = script && script.dataset ? script.dataset : {};
   const windowContext = window.ZBT_SUPPORT_CONTEXT || {};
+  const zohoAsapScriptUrl = scriptContext.zohoAsapScriptUrl || windowContext.zohoAsapScriptUrl || window.ZBT_ZOHO_ASAP_SCRIPT_URL || ${zohoAsapScriptUrl};
   const upmindJwt = scriptContext.upmindJwt || windowContext.upmindJwt || windowContext.user_token || windowContext.userToken;
   const tokenKeys = window.ZBT_UPMIND_TOKEN_KEYS || [
     'access_token',
@@ -336,9 +339,9 @@ const ASAP_BOOTSTRAP_JS = `(() => {
     body: JSON.stringify(body)
   }).then((response) => response.json());
   const hasClientHandoff = Boolean(upmindClient.clientId && upmindClient.email);
-  const ensureContext = hasClientHandoff
+  const ensureContext = loadZohoAsap().then(() => hasClientHandoff
     ? postJson('/auth/upmind-client-context', upmindClient)
-    : fetchJson('/auth/upmind-client-context' + authQuery);
+    : fetchJson('/auth/upmind-client-context' + authQuery));
   ensureContext.then((ctx) => {
     if (!ctx || !ctx.authenticated) return;
     const getJwtTokenCallback = async (success, failure) => {
@@ -350,10 +353,26 @@ const ASAP_BOOTSTRAP_JS = `(() => {
         failure(error);
       }
     };
+    if (!window.ZohoDeskAsapReady || !window.ZohoDeskAsap) return;
     window.ZohoDeskAsapReady && window.ZohoDeskAsapReady(() => {
       ZohoDeskAsap.invoke('login', getJwtTokenCallback);
     });
   }).catch(() => {});
+
+  function loadZohoAsap() {
+    if (document.getElementById('zohodeskasapscript')) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.type = 'text/javascript';
+      s.id = 'zohodeskasapscript';
+      s.defer = true;
+      s.src = zohoAsapScriptUrl;
+      s.onload = resolve;
+      s.onerror = reject;
+      const t = document.getElementsByTagName('script')[0] || document.head.firstChild;
+      (t && t.parentNode ? t.parentNode : document.head).insertBefore(s, t || null);
+    });
+  }
 
   function readTokenFromStorage() {
     const stores = [window.localStorage, window.sessionStorage];
@@ -386,3 +405,4 @@ const ASAP_BOOTSTRAP_JS = `(() => {
     }
   }
 })();`;
+}

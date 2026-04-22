@@ -18,6 +18,7 @@ export interface Env {
 	ZOHO_ACCOUNTS_URL?: string;
 	ZDK_IGNORE_SOURCE_ID?: string;
 	ZOHO_HELP_CENTER_URL?: string;
+	ZOHO_ASAP_SCRIPT_URL?: string;
 	ZOHO_HC_JWT_TERMINAL_URL?: string;
 	ADMIN_TOKEN?: string;
 	ZOHO_HC_JWT_SECRET?: string;

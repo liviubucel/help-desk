@@ -3,6 +3,10 @@
 	const bridgeOrigin = script?.src ? new URL(script.src).origin : window.location.origin;
 	const scriptContext = script?.dataset || {};
 	const windowContext = window.ZBT_SUPPORT_CONTEXT || {};
+	const zohoAsapScriptUrl = scriptContext.zohoAsapScriptUrl
+		|| windowContext.zohoAsapScriptUrl
+		|| window.ZBT_ZOHO_ASAP_SCRIPT_URL
+		|| 'https://desk.zoho.eu/portal/api/web/asapApp/202686000000628009?orgId=20111269432';
 	const upmindJwt = scriptContext.upmindJwt || windowContext.upmindJwt || windowContext.user_token || windowContext.userToken;
 	const tokenKeys = window.ZBT_UPMIND_TOKEN_KEYS || [
 		'access_token',
@@ -28,6 +32,8 @@
 		body: JSON.stringify(body)
 	}).then(r => r.json());
 	const hasClientHandoff = Boolean(upmindClient.clientId && upmindClient.email);
+	await loadZohoAsap();
+
 	const ctx = await (hasClientHandoff
 		? postJson('/auth/upmind-api-client-context', upmindClient)
 		: fetchJson(`/auth/upmind-client-context${authQuery}`)
@@ -47,11 +53,28 @@
 		}
 	};
 
+	if (!window.ZohoDeskAsapReady || !window.ZohoDeskAsap) return;
+
 	window.ZohoDeskAsapReady(() => {
 		if (used) return;
 		used = true;
 		ZohoDeskAsap.invoke('login', getJwtTokenCallback);
 	});
+
+	function loadZohoAsap() {
+		if (document.getElementById('zohodeskasapscript')) return Promise.resolve();
+		return new Promise((resolve, reject) => {
+			const s = document.createElement('script');
+			s.type = 'text/javascript';
+			s.id = 'zohodeskasapscript';
+			s.defer = true;
+			s.src = zohoAsapScriptUrl;
+			s.onload = resolve;
+			s.onerror = reject;
+			const t = document.getElementsByTagName('script')[0] || document.head.firstChild;
+			(t?.parentNode || document.head).insertBefore(s, t || null);
+		});
+	}
 
 	function readTokenFromStorage() {
 		for (const storage of [window.localStorage, window.sessionStorage]) {
