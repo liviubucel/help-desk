@@ -2,7 +2,7 @@ import type { Env, JsonRecord } from '../types';
 import { ensureSchema, isDuplicateEvent, markProcessed, recordFailure, storeRawEvent } from '../db';
 import { storeUpmindLoginHint } from '../db';
 import { logInfo } from '../logger';
-import { readJsonPayload, readString } from '../utils/json';
+import { readJsonPayload, readString, recursiveFindString } from '../utils/json';
 import { json } from '../utils/http';
 import { verifyUpmindWebhookSignature } from '../utils/crypto';
 import { eventKey as computeEventKey } from '../sync/dedupe';
@@ -40,11 +40,25 @@ export async function handleUpmindWebhook(request: Request, env: Env): Promise<R
 	});
 
 	if (normalized.eventType === 'client_logged_in_hook') {
+		const loginIp = readString(payload.access_ip)
+			?? readString(payload.accessIp)
+			?? readString(payload.ip_address)
+			?? readString(payload.ipAddress)
+			?? readString(payload.access_user_ip)
+			?? readString(payload.accessUserIp)
+			?? recursiveFindString(payload, ['access_ip', 'accessIp', 'ip_address', 'ipAddress', 'access_user_ip', 'accessUserIp']);
 		await storeUpmindLoginHint(env, {
-			ipAddress: readString(payload.access_ip),
+			ipAddress: loginIp,
 			clientId: normalized.client.id,
 			email: normalized.client.email,
 			fullName: normalized.client.fullName
+		});
+		logInfo({
+			source: 'upmind-login-hint',
+			stored: Boolean(loginIp && normalized.client.id && normalized.client.email),
+			ipPresent: Boolean(loginIp),
+			clientId: normalized.client.id,
+			email: normalized.client.email
 		});
 	}
 
