@@ -96,13 +96,6 @@ export async function ensureSchema(env: Env): Promise<void> {
 		)
 	`).run();
 
-	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_contact_map_email ON contact_map(email)').run();
-	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_ticket_map_reference ON ticket_map(upmind_reference)').run();
-	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_ticket_map_client ON ticket_map(upmind_client_id)').run();
-	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_ticket ON message_map(ticket_map_id)').run();
-	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_checksum ON message_map(checksum)').run();
-	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_event_failures_event_key ON event_failures(event_key)').run();
-
 	await ensureColumn(env, 'contact_map', 'full_name', 'TEXT');
 	await ensureColumn(env, 'contact_map', 'first_name', 'TEXT');
 	await ensureColumn(env, 'contact_map', 'last_name', 'TEXT');
@@ -113,6 +106,13 @@ export async function ensureSchema(env: Env): Promise<void> {
 	await ensureColumn(env, 'message_map', 'direction', "TEXT DEFAULT 'upmind_to_zoho'");
 	await ensureColumn(env, 'message_map', 'checksum', 'TEXT');
 	await ensureColumn(env, 'raw_events', 'sanitized_preview_json', 'TEXT');
+
+	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_contact_map_email ON contact_map(email)').run();
+	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_ticket_map_reference ON ticket_map(upmind_reference)').run();
+	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_ticket_map_client ON ticket_map(upmind_client_id)').run();
+	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_ticket ON message_map(ticket_map_id)').run();
+	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_checksum ON message_map(checksum)').run();
+	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_event_failures_event_key ON event_failures(event_key)').run();
 }
 
 async function ensureColumn(env: Env, table: string, column: string, definition: string): Promise<void> {
