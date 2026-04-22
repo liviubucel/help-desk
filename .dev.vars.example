@@ -11,6 +11,9 @@ ZOHO_CLIENT_SECRET=replace_me
 ZOHO_REFRESH_TOKEN=replace_me
 ZOHO_ACCOUNTS_URL=https://accounts.zoho.eu
 ZOHO_ASAP_JWT_SECRET=replace_me
-ZOHO_ASAP_SCRIPT_URL=https://desk.zoho.eu/portal/api/web/asapApp/202686000000628009?orgId=20111269432
+ZOHO_ASAP_SCRIPT_URL=replace_me
+ZOHO_ASAP_ALLOWED_HOSTS=portal.zebrabyte.ro
+ZOHO_ASAP_BLOCKED_HOSTS=admin.zebrabyte.ro,webmail.zebrabyte.ro,mail.zebrabyte.ro,cp.zebrabyte.ro,panel.zebrabyte.ro
+ZOHO_ASAP_BLOCKED_PATHS=/wp-admin,/wp-login,/administrator,/webmail
 ZOHO_HC_JWT_SECRET=replace_me
 ZDK_IGNORE_SOURCE_ID=replace-with-a-stable-uuid

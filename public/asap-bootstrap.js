@@ -6,7 +6,8 @@
 	const zohoAsapScriptUrl = scriptContext.zohoAsapScriptUrl
 		|| windowContext.zohoAsapScriptUrl
 		|| window.ZBT_ZOHO_ASAP_SCRIPT_URL
-		|| 'https://desk.zoho.eu/portal/api/web/asapApp/202686000000628009?orgId=20111269432';
+		|| '';
+	if (!zohoAsapScriptUrl) return;
 	const upmindJwt = scriptContext.upmindJwt || windowContext.upmindJwt || windowContext.user_token || windowContext.userToken;
 	const tokenKeys = window.ZBT_UPMIND_TOKEN_KEYS || [
 		'access_token',

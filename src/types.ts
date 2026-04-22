@@ -19,6 +19,10 @@ export interface Env {
 	ZDK_IGNORE_SOURCE_ID?: string;
 	ZOHO_HELP_CENTER_URL?: string;
 	ZOHO_ASAP_SCRIPT_URL?: string;
+	ZOHO_ASAP_ALLOWED_HOSTS?: string;
+	ZOHO_ASAP_BLOCKED_HOSTS?: string;
+	ZOHO_ASAP_ALLOWED_PATHS?: string;
+	ZOHO_ASAP_BLOCKED_PATHS?: string;
 	ZOHO_HC_JWT_TERMINAL_URL?: string;
 	ADMIN_TOKEN?: string;
 	ZOHO_HC_JWT_SECRET?: string;

@@ -307,13 +307,22 @@ const SUPPORT_PAGE_HTML = `<!doctype html>
 </html>`;
 
 function buildAsapBootstrap(env: Env): string {
-	const zohoAsapScriptUrl = JSON.stringify(env.ZOHO_ASAP_SCRIPT_URL || 'https://desk.zoho.eu/portal/api/web/asapApp/202686000000628009?orgId=20111269432');
+	const zohoAsapScriptUrl = JSON.stringify(env.ZOHO_ASAP_SCRIPT_URL || '');
+	const allowedHosts = JSON.stringify(splitEnvList(env.ZOHO_ASAP_ALLOWED_HOSTS));
+	const blockedHosts = JSON.stringify(splitEnvList(env.ZOHO_ASAP_BLOCKED_HOSTS));
+	const allowedPaths = JSON.stringify(splitEnvList(env.ZOHO_ASAP_ALLOWED_PATHS));
+	const blockedPaths = JSON.stringify(splitEnvList(env.ZOHO_ASAP_BLOCKED_PATHS));
 	return `(() => {
   const script = document.currentScript;
   const bridgeOrigin = script && script.src ? new URL(script.src).origin : window.location.origin;
   const scriptContext = script && script.dataset ? script.dataset : {};
   const windowContext = window.ZBT_SUPPORT_CONTEXT || {};
-  const zohoAsapScriptUrl = scriptContext.zohoAsapScriptUrl || windowContext.zohoAsapScriptUrl || window.ZBT_ZOHO_ASAP_SCRIPT_URL || ${zohoAsapScriptUrl};
+  const zohoAsapScriptUrl = ${zohoAsapScriptUrl};
+  const allowedHosts = ${allowedHosts};
+  const blockedHosts = ${blockedHosts};
+  const allowedPaths = ${allowedPaths};
+  const blockedPaths = ${blockedPaths};
+  if (!zohoAsapScriptUrl || !isWidgetAllowed()) return;
   const upmindJwt = scriptContext.upmindJwt || windowContext.upmindJwt || windowContext.user_token || windowContext.userToken;
   const tokenKeys = window.ZBT_UPMIND_TOKEN_KEYS || [
     'access_token',
@@ -374,6 +383,36 @@ function buildAsapBootstrap(env: Env): string {
     });
   }
 
+  function isWidgetAllowed() {
+    const host = window.location.hostname.toLowerCase();
+    const path = window.location.pathname.toLowerCase();
+    if (matchesHost(host, blockedHosts)) return false;
+    if (matchesPath(path, blockedPaths)) return false;
+    if (allowedHosts.length > 0 && !matchesHost(host, allowedHosts)) return false;
+    if (allowedPaths.length > 0 && !matchesPath(path, allowedPaths)) return false;
+    return true;
+  }
+
+  function matchesHost(host, patterns) {
+    return patterns.some((pattern) => {
+      pattern = String(pattern).toLowerCase();
+      if (pattern === '*') return true;
+      if (pattern.indexOf('*.') === 0) {
+        const suffix = pattern.slice(1);
+        return host.endsWith(suffix);
+      }
+      return host === pattern;
+    });
+  }
+
+  function matchesPath(path, patterns) {
+    return patterns.some((pattern) => {
+      pattern = String(pattern).toLowerCase();
+      if (pattern === '*') return true;
+      return path === pattern || path.indexOf(pattern.endsWith('/') ? pattern : pattern + '/') === 0;
+    });
+  }
+
   function readTokenFromStorage() {
     const stores = [window.localStorage, window.sessionStorage];
     for (const storage of stores) {
@@ -405,4 +444,11 @@ function buildAsapBootstrap(env: Env): string {
     }
   }
 })();`;
+}
+
+function splitEnvList(value?: string): string[] {
+	return (value || '')
+		.split(',')
+		.map((item) => item.trim())
+		.filter(Boolean);
 }
