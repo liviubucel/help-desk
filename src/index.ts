@@ -250,6 +250,7 @@ async function tryResolveOrCreateContact(env: Env, client: NormalizedClient): Pr
 }
 
 async function runMaintenanceSync(env: Env): Promise<JsonRecord> {
+	await ensureSchema(env);
 	const cron = await handleCronSync(env);
 	const retry = await retryFailedEvents(env);
 	return { ...cron, ...retry };
