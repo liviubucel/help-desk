@@ -1,7 +1,8 @@
 import type { Env, JsonRecord } from '../types';
 import { ensureSchema, isDuplicateEvent, markProcessed, recordFailure, storeRawEvent } from '../db';
+import { storeUpmindLoginHint } from '../db';
 import { logInfo } from '../logger';
-import { readJsonPayload } from '../utils/json';
+import { readJsonPayload, readString } from '../utils/json';
 import { json } from '../utils/http';
 import { verifyUpmindWebhookSignature } from '../utils/crypto';
 import { eventKey as computeEventKey } from '../sync/dedupe';
@@ -38,6 +39,15 @@ export async function handleUpmindWebhook(request: Request, env: Env): Promise<R
 		messageId: normalized.message?.id
 	});
 
+	if (normalized.eventType === 'client_logged_in_hook') {
+		await storeUpmindLoginHint(env, {
+			ipAddress: readString(payload.access_ip),
+			clientId: normalized.client.id,
+			email: normalized.client.email,
+			fullName: normalized.client.fullName
+		});
+	}
+
 	if (await isDuplicateEvent(env, key)) return json({ ok: true, duplicate: true, eventKey: key });
 
 	await storeRawEvent(env, 'upmind', normalized.eventType, key, payload);
@@ -66,4 +76,3 @@ async function isValidUpmindSignature(request: Request, env: Env, rawBody: strin
 		allowInsecure: env.ALLOW_INSECURE_WEBHOOKS === 'true'
 	});
 }
-

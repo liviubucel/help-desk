@@ -1,6 +1,7 @@
 import { hmacSha256Hex, timingSafeEqual } from './utils/crypto';
 import type { Env } from './types';
 import { extractClientFromUpmindApiResponse } from './upmind/api';
+import { getUpmindLoginHintByIp } from './db';
 
 export interface AuthenticatedClient {
 	clientId: string;
@@ -8,7 +9,7 @@ export interface AuthenticatedClient {
 	name?: string;
 }
 
-export type AuthSource = 'upmind_session_jwt' | 'upmind_access_token' | 'upmind_api' | 'none';
+export type AuthSource = 'upmind_session_jwt' | 'upmind_access_token' | 'upmind_login_hint' | 'upmind_api' | 'none';
 
 export interface AuthResolution {
 	authenticated: boolean;
@@ -140,6 +141,9 @@ export async function resolveAuthenticatedUpmindClientWithSource(request: Reques
   const accessTokenClient = await resolveClientFromUpmindAccessToken(request, env);
   if (accessTokenClient) return logAuthResolution({ authenticated: true, source: 'upmind_access_token', client: accessTokenClient });
 
+  const loginHintClient = await resolveClientFromUpmindLoginHint(request, env);
+  if (loginHintClient) return logAuthResolution({ authenticated: true, source: 'upmind_login_hint', client: loginHintClient });
+
   return logAuthResolution({ authenticated: false, source: 'none', reason: 'missing or invalid Upmind identity' });
 }
 
@@ -210,6 +214,11 @@ function readUpmindAccessToken(request: Request): string | undefined {
 
   const urlToken = new URL(request.url).searchParams.get('upmind_access_token');
   return urlToken?.trim() || undefined;
+}
+
+async function resolveClientFromUpmindLoginHint(request: Request, env: Env): Promise<AuthenticatedClient | null> {
+  const ipAddress = request.headers.get('cf-connecting-ip') || request.headers.get('x-real-ip') || undefined;
+  return getUpmindLoginHintByIp(env, ipAddress);
 }
 
 function readCookieToken(request: Request, cookieName: string): string | undefined {

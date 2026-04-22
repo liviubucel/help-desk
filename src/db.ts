@@ -95,6 +95,17 @@ export async function ensureSchema(env: Env): Promise<void> {
 			created_at TEXT DEFAULT CURRENT_TIMESTAMP
 		)
 	`).run();
+	await env.BRIDGE_DB.prepare(`
+		CREATE TABLE IF NOT EXISTS upmind_login_hints (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ip_address TEXT NOT NULL,
+			upmind_client_id TEXT NOT NULL,
+			email TEXT NOT NULL,
+			full_name TEXT,
+			expires_at INTEGER NOT NULL,
+			created_at TEXT DEFAULT CURRENT_TIMESTAMP
+		)
+	`).run();
 
 	await ensureColumn(env, 'contact_map', 'full_name', 'TEXT');
 	await ensureColumn(env, 'contact_map', 'first_name', 'TEXT');
@@ -113,6 +124,7 @@ export async function ensureSchema(env: Env): Promise<void> {
 	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_ticket ON message_map(ticket_map_id)').run();
 	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_message_map_checksum ON message_map(checksum)').run();
 	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_event_failures_event_key ON event_failures(event_key)').run();
+	await env.BRIDGE_DB.prepare('CREATE INDEX IF NOT EXISTS idx_upmind_login_hints_ip_expires ON upmind_login_hints(ip_address, expires_at)').run();
 }
 
 async function ensureColumn(env: Env, table: string, column: string, definition: string): Promise<void> {
@@ -157,4 +169,31 @@ export async function audit(env: Env, input: { direction: string; objectType: st
 		INSERT INTO sync_audit (direction, object_type, object_id, action, status, message)
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 	`).bind(input.direction, input.objectType, input.objectId ?? null, input.action, input.status, input.message ?? null).run();
+}
+
+export async function storeUpmindLoginHint(env: Env, input: { ipAddress?: string; clientId?: string; email?: string; fullName?: string }): Promise<void> {
+	if (!input.ipAddress || !input.clientId || !input.email) return;
+	const now = Math.floor(Date.now() / 1000);
+	const ttl = Number(env.UPMIND_LOGIN_HINT_TTL_SECONDS || 900);
+	const expiresAt = now + (Number.isFinite(ttl) && ttl > 0 ? ttl : 900);
+
+	await env.BRIDGE_DB.prepare('DELETE FROM upmind_login_hints WHERE expires_at <= ?1').bind(now).run();
+	await env.BRIDGE_DB.prepare(`
+		INSERT INTO upmind_login_hints (ip_address, upmind_client_id, email, full_name, expires_at)
+		VALUES (?1, ?2, ?3, ?4, ?5)
+	`).bind(input.ipAddress, input.clientId, input.email, input.fullName ?? null, expiresAt).run();
+}
+
+export async function getUpmindLoginHintByIp(env: Env, ipAddress?: string): Promise<{ clientId: string; email: string; name?: string } | null> {
+	if (!ipAddress) return null;
+	const now = Math.floor(Date.now() / 1000);
+	const row = await env.BRIDGE_DB.prepare(`
+		SELECT upmind_client_id, email, full_name
+		FROM upmind_login_hints
+		WHERE ip_address = ?1 AND expires_at > ?2
+		ORDER BY id DESC
+		LIMIT 1
+	`).bind(ipAddress, now).first<{ upmind_client_id: string; email: string; full_name?: string }>();
+
+	return row ? { clientId: row.upmind_client_id, email: row.email, name: row.full_name || undefined } : null;
 }
